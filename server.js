@@ -95,7 +95,7 @@ console.log('  CONVERT_BIN:', CONVERT_BIN);
 console.log('  FONT_PATH:', FONT_PATH);
 
 // Wrap execFile in a promise for async/await use
-function run(bin, args, timeout = 60000) {
+function run(bin, args, timeout = 120000) {
   return new Promise((resolve, reject) => {
     console.log('exec:', bin, args.join(' '));
     execFile(bin, args, { timeout }, (err, stdout, stderr) => {
@@ -191,15 +191,15 @@ async function runConversion({ inputPath, inputFormat, outputPath, outputFormat,
       cmd.outputOptions(['-movflags', '+faststart', '-pix_fmt', 'yuv420p', '-crf', String(qv.crf)]);
     }
 
-    // 60-second timeout — kill ffmpeg if it hangs
+    // 2-minute timeout — kill ffmpeg if it hangs
     let done = false;
     const timer = setTimeout(() => {
       if (!done) {
         done = true;
         cmd.kill('SIGKILL');
-        reject(new Error('Conversion timed out after 60 seconds'));
+        reject(new Error('Conversion timed out after 120 seconds'));
       }
-    }, 60_000);
+    }, 120_000);
 
     cmd
       .output(outputPath)
@@ -373,7 +373,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
     return new Promise((resolve, reject) => {
       console.log('[burn] ffmpeg', args.join(' '));
       let done = false;
-      const proc = execFile(FFMPEG_BIN, args, {}, (err, stdout, stderr) => {
+      const proc = execFile(FFMPEG_BIN, args, { timeout: 120000 }, (err, stdout, stderr) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
@@ -1641,11 +1641,11 @@ try {
 
 // ── Image resize (crop + scale static images) ─────────────────────────────────
 app.post('/api/image-resize', upload.single('image'), async (req, res) => {
-  const tmpFiles = [];
-  const mkTmp = (ext) => {
-    const p = path.join(os.tmpdir(), `vfe_img_${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`);
-    tmpFiles.push(p);
-    return p;
+  let inputPath  = null;
+  let outputPath = null;
+  const cleanup  = () => {
+    for (const p of [inputPath, outputPath]) { try { if (p) fs.unlinkSync(p); } catch(_) {} }
+    if (req.file) { try { fs.unlinkSync(req.file.path); } catch(_) {} }
   };
   try {
     if (!req.file) return res.status(400).json({ error: 'No image file' });
@@ -1657,12 +1657,11 @@ app.post('/api/image-resize', upload.single('image'), async (req, res) => {
     const outputWidth = parseInt(req.body.outputWidth) || 0;
     const outputHeight= parseInt(req.body.outputHeight)|| 0;
     const outputName  = req.body.outputName || ('image.' + inputExt);
+    const rand        = Math.random().toString(36).slice(2, 8);
 
-    // Give the uploaded temp file a proper extension so ffmpeg knows the format
-    const inputPath  = mkTmp(inputExt === 'jpg' ? 'jpg' : inputExt);
+    inputPath  = path.join(os.tmpdir(), `vfe_img_in_${Date.now()}_${rand}.${inputExt}`);
+    outputPath = path.join(os.tmpdir(), `vfe_img_out_${Date.now()}_${rand}.${inputExt}`);
     fs.copyFileSync(req.file.path, inputPath);
-
-    const outputPath = mkTmp(inputExt === 'jpg' ? 'jpg' : inputExt);
 
     const vfParts = [];
     if (cropW > 0 && cropH > 0) vfParts.push(`crop=${cropW}:${cropH}:${cropX}:${cropY}`);
@@ -1673,18 +1672,13 @@ app.post('/api/image-resize', upload.single('image'), async (req, res) => {
     if (inputExt === 'jpg') args.push('-q:v', '2');
     args.push(outputPath);
 
-    await run(FFMPEG_BIN, args, 30000);
+    await run(FFMPEG_BIN, args, 60000);
 
-    const mimeMap = { png: 'image/png', jpg: 'image/jpeg', bmp: 'image/bmp', tiff: 'image/tiff', tif: 'image/tiff' };
-    res.set('Content-Type', mimeMap[inputExt] || 'image/png');
-    res.set('Content-Disposition', `attachment; filename="${outputName}"`);
-    res.send(fs.readFileSync(outputPath));
+    res.download(outputPath, outputName, () => cleanup());
   } catch(err) {
     console.error('image-resize error:', err.message);
-    res.status(500).json({ error: err.message });
-  } finally {
-    tmpFiles.forEach(f => { try { fs.unlinkSync(f); } catch(_) {} });
-    if (req.file) { try { fs.unlinkSync(req.file.path); } catch(_) {} }
+    cleanup();
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
 });
 
