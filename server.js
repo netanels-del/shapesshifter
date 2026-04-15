@@ -23,7 +23,11 @@ app.use((req, res, next) => {
 app.use(express.static(__dirname, { index: false }));
 
 // ── Page routes ───────────────────────────────────────────────────────────────
-app.get('/',              (req, res) => res.redirect('/shapesshifter'));
+app.get('/', (req, res) => {
+  const startPage = process.env.START_PAGE;
+  if (startPage) return res.sendFile(path.join(__dirname, startPage));
+  res.redirect('/shapesshifter');
+});
 app.get('/shapesshifter', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ── Multer ────────────────────────────────────────────────────────────────────
