@@ -64,17 +64,34 @@ function buildScaleFilter(width, aspect) {
   return `scale=${width}:-2`;
 }
 
-const isMac       = process.platform === 'darwin';
-const FFMPEG_BIN  = isMac ? '/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg' : 'ffmpeg';
-const FFPROBE_BIN = isMac ? '/opt/homebrew/opt/ffmpeg-full/bin/ffprobe' : 'ffprobe';
-const CONVERT_BIN = isMac ? '/opt/homebrew/bin/convert' : 'convert';
-const FONT_PATH   = isMac
-  ? '/System/Library/Fonts/Helvetica.ttc'
-  : '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf';
+// ── Auto-detect tool paths ────────────────────────────────────────────────────
+function findBin(candidates) {
+  for (const bin of candidates) {
+    try {
+      if (bin.startsWith('/')) {
+        if (fs.existsSync(bin)) return bin;
+      } else {
+        execSync(`which ${bin}`, { stdio: 'ignore' });
+        return bin;
+      }
+    } catch {}
+  }
+  return candidates[candidates.length - 1]; // fallback to last
+}
+
+const FFMPEG_BIN  = findBin(['/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg', '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg']);
+const FFPROBE_BIN = findBin(['/opt/homebrew/opt/ffmpeg-full/bin/ffprobe', '/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe']);
+const CONVERT_BIN = findBin(['/opt/homebrew/bin/convert', '/usr/bin/convert', '/usr/local/bin/convert', 'convert']);
+const FONT_PATH   = findBin([
+  '/System/Library/Fonts/Helvetica.ttc',
+  '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+]);
 
 ffmpeg.setFfmpegPath(FFMPEG_BIN);
-console.log('  Platform:', isMac ? 'macOS' : 'Linux');
 console.log('  FFMPEG_BIN:', FFMPEG_BIN);
+console.log('  FFPROBE_BIN:', FFPROBE_BIN);
+console.log('  CONVERT_BIN:', CONVERT_BIN);
 console.log('  FONT_PATH:', FONT_PATH);
 
 // Wrap execFile in a promise for async/await use
