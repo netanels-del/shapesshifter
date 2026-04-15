@@ -1778,7 +1778,7 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, '127.0.0.1', () => {
+app.listen(process.env.PORT || PORT, '0.0.0.0', () => {
   console.log('');
   console.log('  Video Format Editor — server running');
   console.log(`  Local:  http://127.0.0.1:${PORT}`);
