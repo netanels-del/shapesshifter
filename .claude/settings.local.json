@@ -8,7 +8,10 @@
       "Bash(curl -s http://localhost:3000/health)",
       "Bash(ls /Users/netanelshay/video-format-editor/*.mp4)",
       "Bash(curl:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }
