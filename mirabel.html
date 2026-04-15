@@ -1329,8 +1329,15 @@ header p {
     <p>Bring photos to life</p>
   </header>
 
+  <!-- ── Image to Video toggle ────────────────────────────────────── -->
+  <div class="gen-divider" onclick="toggleGenSection()">
+    <div class="gen-divider-line"></div>
+    <span class="gen-divider-text">🎬 Image to Video</span>
+    <div class="gen-divider-line"></div>
+  </div>
+
   <!-- ── Kling AI Generator ─────────────────────────────────────────── -->
-  <div class="gen-section">
+  <div class="gen-section" id="gen-section" style="display:none">
 
     <!-- Model label -->
     <div class="gen-model-row">
@@ -2128,6 +2135,11 @@ document.getElementById('gen-end-input').addEventListener('click', function(e) {
 document.getElementById('gen-end-input').addEventListener('change', function() {
   if (this.files[0]) genSetFile('end', this.files[0]);
 });
+
+function toggleGenSection() {
+  const section = document.getElementById('gen-section');
+  section.style.display = section.style.display === 'none' ? 'block' : 'none';
+}
 
 function toggleOrientationPicker() {
   const picker = document.getElementById('orientation-picker');
