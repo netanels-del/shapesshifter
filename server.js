@@ -9,7 +9,7 @@ const os      = require('os');
 const { execSync, execFile } = require('child_process');
 const { createCanvas, loadImage } = require('canvas');
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const app  = express();
 
 // ── Security / COOP-COEP headers ─────────────────────────────────────────────
@@ -1778,9 +1778,6 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(process.env.PORT || PORT, '0.0.0.0', () => {
-  console.log('');
-  console.log('  Video Format Editor — server running');
-  console.log(`  Local:  http://127.0.0.1:${PORT}`);
-  console.log('');
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
 });
