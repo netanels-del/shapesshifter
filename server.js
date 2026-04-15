@@ -1738,14 +1738,33 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
 
     const actualFps = Math.max(1, Math.round((fpsSlider / 100) * 30));
 
-    // WEBP: formula-based (animated WEBP size scales with frames, not bitrate)
+    // WEBP: run the actual full conversion, measure real output size, then delete
     if (outputFormat === 'webp') {
-      const totalFrames   = actualFps * effectiveDuration;
-      const qualityFactor = Math.max(1, qualitySlider) / 100;
-      const bytesPerFrame = outW * outH * 3 * qualityFactor * 0.1;
-      const estimatedBytes= totalFrames * bytesPerFrame;
-      const estimatedMB   = Math.max(0.05, estimatedBytes / (1024 * 1024));
-      return res.json({ estimatedMB: Math.round(estimatedMB * 100) / 100, format: 'WEBP', details: `${totalFrames.toFixed(0)} frames × ${(bytesPerFrame / 1024).toFixed(1)} KB/frame` });
+      const webpPath = path.join(os.tmpdir(), `vfe_est_webp_${Date.now()}.webp`);
+      const webpArgs = [];
+      if (trimStart > 0) webpArgs.push('-ss', String(trimStart));
+      const trimDur = (!isNaN(trimEndRaw) && trimEndRaw > trimStart) ? trimEndRaw - trimStart : (srcDur - trimStart);
+      if (trimDur > 0 && trimDur < srcDur) webpArgs.push('-t', String(trimDur));
+      webpArgs.push('-i', inputPath);
+      const vfParts = [];
+      if (Math.abs(speed - 1.0) > 0.001) vfParts.push(`setpts=${(1 / speed).toFixed(6)}*PTS`);
+      vfParts.push(`fps=${actualFps}`, `scale=${outW}:${outH}`);
+      webpArgs.push(
+        '-vf', vfParts.join(','),
+        '-vcodec', 'libwebp', '-lossless', '0', '-compression_level', '6',
+        '-q:v', String(Math.max(1, qualitySlider)), '-loop', '0', '-preset', 'picture', '-an', '-vsync', '0',
+        webpPath, '-y'
+      );
+      await new Promise((resolve, reject) => {
+        execFile(FFMPEG_BIN, webpArgs, { timeout: 300000 }, (err) => {
+          if (err) reject(new Error('webp conversion: ' + err.message));
+          else resolve();
+        });
+      });
+      const realBytes = fs.statSync(webpPath).size;
+      try { fs.unlinkSync(webpPath); } catch(_) {}
+      const realMB = Math.max(0.05, realBytes / (1024 * 1024));
+      return res.json({ estimatedMB: Math.round(realMB * 100) / 100, format: 'WEBP', details: 'Real size from full conversion' });
     }
 
     // All other formats: 1-second sample conversion + extrapolate
