@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ShapeShifter</title>
-<link rel="icon" type="image/png" href="/Shapeshifter.png">
+<link rel="icon" href="/Shapeshifter.png" type="image/png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -72,7 +72,7 @@ body {
 /* ── Header ─────────────────────────────────────────────────────────────────── */
 header {
   text-align: center;
-  padding: 40px 20px 20px;
+  padding: 16px 20px 10px;
 }
 .header-badge {
   display: inline-flex;
@@ -160,7 +160,8 @@ header p {
 .spin { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Tab nav ─────────────────────────────────────────────────────────────────── */
+/* ── Tab nav (hidden — editor shown directly) ────────────────────────────────── */
+#tab-nav { display: none !important; }
 .tab-nav {
   display: flex;
   overflow-x: auto;
@@ -571,7 +572,7 @@ header p {
 }
 #panel-video-editor.active {
   display: flex !important;
-  height: calc(100vh - 60px);
+  height: calc(100vh - 270px);
   overflow: hidden;
   animation: fade-up 0.28s cubic-bezier(0.22,1,0.36,1);
 }
@@ -984,7 +985,7 @@ header p {
 <div class="page-wrap">
 
 <header>
-  <img src="/Shapeshifter.png" alt="ShapeShifter" style="height:68px;width:auto;display:block;margin:0 auto 10px;">
+  <img src="/Shapeshifter.png" alt="ShapeShifter" style="height:200px;width:auto;display:block;margin:0 auto 8px;">
   <p>Format Changer</p>
 </header>
 
