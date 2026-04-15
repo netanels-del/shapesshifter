@@ -1746,13 +1746,15 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
       const trimDur = (!isNaN(trimEndRaw) && trimEndRaw > trimStart) ? trimEndRaw - trimStart : (srcDur - trimStart);
       if (trimDur > 0 && trimDur < srcDur) webpArgs.push('-t', String(trimDur));
       webpArgs.push('-i', inputPath);
+      const qualityVal = Math.max(1, Math.min(100, qualitySlider));
       const vfParts = [];
       if (Math.abs(speed - 1.0) > 0.001) vfParts.push(`setpts=${(1 / speed).toFixed(6)}*PTS`);
-      vfParts.push(`fps=${actualFps}`, `scale=${outW}:${outH}`);
+      if (outW > 0 && outH > 0) vfParts.push(`fps=${actualFps},scale=${outW}:${outH}`);
+      else vfParts.push(`fps=${actualFps}`);
       webpArgs.push(
         '-vf', vfParts.join(','),
         '-vcodec', 'libwebp', '-lossless', '0', '-compression_level', '6',
-        '-q:v', String(Math.max(1, qualitySlider)), '-loop', '0', '-preset', 'picture', '-an', '-vsync', '0',
+        '-q:v', String(qualityVal), '-loop', '0', '-preset', 'picture', '-an', '-vsync', '0',
         webpPath, '-y'
       );
       await new Promise((resolve, reject) => {
