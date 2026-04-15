@@ -26,7 +26,7 @@ app.use(express.static(__dirname, { index: false }));
 app.get('/', (req, res) => {
   const startPage = process.env.START_PAGE;
   if (startPage) return res.sendFile(path.join(__dirname, startPage));
-  res.redirect('/shapesshifter');
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 app.get('/shapesshifter', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
