@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -L -o /Users/netanelshay/video-format-editor/lib/ffmpeg.min.js \"https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js\")",
+      "Bash(node -e \"require\\(''canvas''\\)\")",
+      "Bash(npm install:*)",
+      "Bash(node:*)",
+      "Bash(curl -s http://localhost:3000/health)",
+      "Bash(ls /Users/netanelshay/video-format-editor/*.mp4)",
+      "Bash(curl:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

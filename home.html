@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fantasia</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  min-height: 100vh;
+  background: #f2718f;
+  font-family: 'Inter', -apple-system, sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px 60px;
+  overflow-x: hidden;
+}
+
+/* ── Fade-in on load ─────────────────────────────────────────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.page-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 860px;
+  animation: fade-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Logo ────────────────────────────────────────────────────────────────────── */
+.logo-wrap {
+  margin-bottom: 48px;
+}
+.logo-wrap img {
+  width: clamp(260px, 65vw, 420px);
+  height: auto;
+  display: block;
+  filter: drop-shadow(0 8px 32px rgba(180, 0, 80, 0.25));
+}
+
+/* ── Apps grid ───────────────────────────────────────────────────────────────── */
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  width: 100%;
+}
+
+.app-btn {
+  display: block;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+  border-radius: 24px;
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.22s ease;
+  box-shadow: 0 4px 20px rgba(140, 0, 60, 0.2);
+  overflow: hidden;
+}
+.app-btn img {
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  display: block;
+  border-radius: 24px;
+}
+.app-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 12px 40px rgba(140, 0, 60, 0.38);
+}
+.app-btn:active {
+  transform: scale(1.05);
+}
+
+/* ── Tooltips ────────────────────────────────────────────────────────────────── */
+.tip {
+  position: relative;
+  overflow: visible;
+}
+.tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 15, 15, 0.93);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.45;
+  padding: 9px 14px;
+  border-radius: 10px;
+  width: 220px;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  animation: none;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+  transform: translateX(-50%) translateY(6px);
+  z-index: 50;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  white-space: normal;
+}
+.tip:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ── Coming soon toast ───────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%) translateY(16px);
+  background: #fff;
+  color: #e0196e;
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 12px 28px;
+  border-radius: 100px;
+  box-shadow: 0 8px 32px rgba(180, 0, 80, 0.22), 0 2px 8px rgba(0,0,0,0.1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s, transform 0.22s;
+  white-space: nowrap;
+  z-index: 100;
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+</style>
+</head>
+<body>
+
+<div class="page-content">
+
+  <div class="logo-wrap">
+    <img src="Fantasia.png" alt="Fantasia">
+  </div>
+
+  <div class="apps-grid">
+    <button class="app-btn js-soon tip" data-tip="Create static ads from scratch, based on competitor research or winning creatives, with built-in policy checking."><img src="WishCraft.jpeg" alt="WishCraft"></button>
+    <a      class="app-btn tip" href="/mirabel.html" data-tip="Turn any picture into a video or GIF, and add captions or a call-to-action with ease."><img src="Mirabel.png" alt="Mirabel"></a>
+    <a      class="app-btn tip" href="/shapesshifter" data-tip="Convert videos between formats, adjust aspect ratios, and resize static creatives for any platform."><img src="Shapeshifter.png" alt="ShapesShifter"></a>
+    <button class="app-btn js-soon tip" data-tip="Discover high-performing ad titles based on market research and competitor spying."><img src="Quill.jpeg"     alt="Quill"></button>
+    <button class="app-btn js-soon tip" data-tip="Help Meta campaign managers launch new campaigns or generate variations of existing posts in seconds."><img src="Pixie.png"      alt="Pixie"></button>
+    <button class="app-btn js-soon tip" data-tip="Help Google campaign managers build thumbnails from scratch or fine-tune existing ones for better performance."><img src="Tinker Bell.png" alt="Tinker Bell"></button>
+  </div>
+
+</div>
+
+<div class="toast" id="toast">Coming soon ✨</div>
+
+<script>
+let toastTimer = null;
+document.querySelectorAll('.js-soon').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const toast = document.getElementById('toast');
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+  });
+});
+</script>
+</body>
+</html>
