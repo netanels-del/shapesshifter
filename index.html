@@ -2427,13 +2427,21 @@ document.getElementById('ve-estimate-btn').addEventListener('click', async () =>
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Server error');
     const data = await res.json();
 
-    const mb    = data.estimatedMB;
-    const mbStr = mb < 1 ? mb.toFixed(2) : mb.toFixed(1);
-    let text = `~${mbStr} MB (${data.format})`;
-    if (mb < 1) {
-      resultEl.style.color = '#00cc44';
+    const mb     = data.estimatedMB;
+    const mbStr  = mb < 1 ? mb.toFixed(2) : mb.toFixed(1);
+    const isWebp = outputFmt === 'webp';
+    let text;
+    if (isWebp) {
+      if (mb < 1) {
+        resultEl.style.color = '#00cc44';
+        text = `✓ ~${mbStr} MB (WEBP) — estimate only`;
+      } else {
+        resultEl.style.color = '#ff4444';
+        text = `~${mbStr} MB (WEBP) — estimate only`;
+      }
     } else {
-      resultEl.style.color = '#ff4444';
+      resultEl.style.color = '';
+      text = `~${mbStr} MB (${data.format})`;
     }
     resultEl.textContent = text;
   } catch (err) {

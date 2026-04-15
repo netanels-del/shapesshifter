@@ -1736,13 +1736,24 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
     const outW = outputWidth  || srcW;
     const outH = outputHeight || srcH;
 
-    const actualFps     = Math.max(1, Math.round((fpsSlider / 100) * 30));
+    const actualFps = Math.max(1, Math.round((fpsSlider / 100) * 30));
+
+    // WEBP: formula-based (animated WEBP size scales with frames, not bitrate)
+    if (outputFormat === 'webp') {
+      const totalFrames   = actualFps * effectiveDuration;
+      const qualityFactor = Math.max(1, qualitySlider) / 100;
+      const bytesPerFrame = outW * outH * 3 * qualityFactor * 0.1;
+      const estimatedBytes= totalFrames * bytesPerFrame;
+      const estimatedMB   = Math.max(0.05, estimatedBytes / (1024 * 1024));
+      return res.json({ estimatedMB: Math.round(estimatedMB * 100) / 100, format: 'WEBP', details: `${totalFrames.toFixed(0)} frames × ${(bytesPerFrame / 1024).toFixed(1)} KB/frame` });
+    }
+
+    // All other formats: 1-second sample conversion + extrapolate
     const sampleStart   = Math.floor(effectiveDuration / 2);
     const sampleDuration= Math.min(1, effectiveDuration);
-    const sampleExt     = (outputFormat === 'gif' || outputFormat === 'webp') ? outputFormat : 'mp4';
+    const sampleExt     = outputFormat === 'gif' ? 'gif' : 'mp4';
     const samplePath    = path.join(os.tmpdir(), `vfe_est_${Date.now()}.${sampleExt}`);
 
-    // Build ffmpeg args for 1-second sample conversion
     let sampleArgs;
     if (outputFormat === 'gif') {
       const maxColors = qualitySlider >= 80 ? 256 : qualitySlider >= 40 ? 128 : 64;
@@ -1750,14 +1761,6 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
         '-ss', String(sampleStart), '-t', String(sampleDuration), '-i', inputPath,
         '-vf', `fps=${actualFps},scale=${outW}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=${maxColors}[p];[s1][p]paletteuse`,
         '-loop', '0',
-        samplePath, '-y'
-      ];
-    } else if (outputFormat === 'webp') {
-      sampleArgs = [
-        '-ss', String(sampleStart), '-t', String(sampleDuration), '-i', inputPath,
-        '-vf', `fps=${actualFps},scale=${outW}:${outH}`,
-        '-vcodec', 'libwebp', '-lossless', '0', '-compression_level', '6',
-        '-q:v', String(qualitySlider), '-loop', '0', '-preset', 'picture', '-an', '-vsync', '0',
         samplePath, '-y'
       ];
     } else {
