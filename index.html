@@ -398,6 +398,90 @@ header p {
   cursor: wait;
 }
 
+/* ── Conversion progress UI ──────────────────────────────────────────────────── */
+.cvt-progress {
+  margin-top: 22px;
+  background: rgba(79,195,247,0.05);
+  border: 1px solid rgba(79,195,247,0.18);
+  border-radius: var(--radius);
+  padding: 22px 20px 18px;
+  animation: fade-up 0.25s cubic-bezier(0.22,1,0.36,1);
+}
+.cvt-stages {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin-bottom: 18px;
+}
+.cvt-stage {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.25);
+  letter-spacing: 0.4px;
+  transition: color 0.3s;
+}
+.cvt-stage-dot {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(79,195,247,0.2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.72rem; font-weight: 700;
+  transition: all 0.3s;
+  background: rgba(79,195,247,0.05);
+  flex-shrink: 0;
+}
+.cvt-stage-sep {
+  width: 28px; height: 2px;
+  background: rgba(79,195,247,0.15);
+  margin: 0 4px;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+.cvt-stage.active { color: #fff; }
+.cvt-stage.active .cvt-stage-dot {
+  border-color: var(--pink);
+  background: rgba(79,195,247,0.15);
+  color: var(--pink);
+  box-shadow: 0 0 12px rgba(79,195,247,0.35);
+}
+.cvt-stage.done { color: var(--success); }
+.cvt-stage.done .cvt-stage-dot {
+  border-color: var(--success);
+  background: rgba(74,222,128,0.12);
+  color: var(--success);
+}
+.cvt-stage.done + .cvt-stage-sep { background: rgba(74,222,128,0.4); }
+.cvt-bar-wrap {
+  width: 100%; height: 6px;
+  background: rgba(79,195,247,0.12);
+  border-radius: 3px; overflow: hidden;
+  margin-bottom: 12px;
+}
+.cvt-bar {
+  height: 100%; width: 0%;
+  background: var(--gradient);
+  border-radius: 3px;
+  transition: width 0.25s ease;
+}
+@keyframes cvt-pulse {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.cvt-bar.indeterminate {
+  width: 30% !important;
+  animation: cvt-pulse 1.4s ease-in-out infinite;
+}
+.cvt-msg {
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--muted);
+  min-height: 1.2em;
+}
+
 /* ── Download button ─────────────────────────────────────────────────────────── */
 .btn-download {
   display: none;
@@ -1232,6 +1316,23 @@ function buildConvertPanel(tab) {
       <div class="size-hint" id="size-hint-${tab.id}"></div>
     </div>
     <button class="btn-convert" id="convert-btn-${tab.id}" disabled>Convert &amp; Download</button>
+    <div class="cvt-progress" id="cvt-progress-${tab.id}" style="display:none">
+      <div class="cvt-stages">
+        <div class="cvt-stage" id="cvt-stage-upload-${tab.id}">
+          <div class="cvt-stage-dot">1</div><span>Upload</span>
+        </div>
+        <div class="cvt-stage-sep" id="cvt-sep-1-${tab.id}"></div>
+        <div class="cvt-stage" id="cvt-stage-convert-${tab.id}">
+          <div class="cvt-stage-dot">2</div><span>Convert</span>
+        </div>
+        <div class="cvt-stage-sep" id="cvt-sep-2-${tab.id}"></div>
+        <div class="cvt-stage" id="cvt-stage-download-${tab.id}">
+          <div class="cvt-stage-dot">3</div><span>Download</span>
+        </div>
+      </div>
+      <div class="cvt-bar-wrap"><div class="cvt-bar" id="cvt-bar-${tab.id}"></div></div>
+      <div class="cvt-msg" id="cvt-msg-${tab.id}"></div>
+    </div>
     <a class="btn-download" id="dl-btn-${tab.id}" download>⬇ Download Again</a>`;
 }
 
@@ -1411,17 +1512,51 @@ async function doConvert(tab) {
   const state = tabState[tab.id];
   if (!state.file) return;
 
-  const btn = document.getElementById('convert-btn-' + tab.id);
-  btn.disabled = true;
-  btn.classList.add('btn-loading');
-  btn.textContent = 'Converting…';
+  const btn        = document.getElementById('convert-btn-' + tab.id);
+  const progressEl = document.getElementById('cvt-progress-' + tab.id);
+  const barEl      = document.getElementById('cvt-bar-' + tab.id);
+  const msgEl      = document.getElementById('cvt-msg-' + tab.id);
+  const stageEls   = {
+    upload:   document.getElementById('cvt-stage-upload-'   + tab.id),
+    convert:  document.getElementById('cvt-stage-convert-'  + tab.id),
+    download: document.getElementById('cvt-stage-download-' + tab.id),
+  };
+  const sepEls = [
+    document.getElementById('cvt-sep-1-' + tab.id),
+    document.getElementById('cvt-sep-2-' + tab.id),
+  ];
+
+  const ORDER = ['upload', 'convert', 'download'];
+
+  function setStage(stage, pct, msg, indeterminate = false) {
+    const curIdx = ORDER.indexOf(stage);
+    ORDER.forEach((s, i) => {
+      stageEls[s].classList.toggle('active', s === stage);
+      stageEls[s].classList.toggle('done',   i < curIdx);
+    });
+    barEl.classList.toggle('indeterminate', indeterminate);
+    if (!indeterminate) barEl.style.width = pct + '%';
+    msgEl.textContent = msg;
+  }
+
+  // Show progress UI, hide convert button
+  btn.style.display = 'none';
+  progressEl.style.display = 'block';
+
+  // Disable tab nav while processing
+  document.querySelectorAll('.tab-btn').forEach(b => b.disabled = true);
+
+  function finish() {
+    progressEl.style.display = 'none';
+    btn.style.display = '';
+    document.querySelectorAll('.tab-btn').forEach(b => b.disabled = false);
+  }
 
   const widthEl   = document.getElementById('width-'   + tab.id);
   const aspectEl  = document.getElementById('aspect-'  + tab.id);
   const fpsEl     = tab.showFps ? document.getElementById('fps-' + tab.id) : null;
   const qualityEl = document.getElementById('quality-' + tab.id);
   const nameEl    = document.getElementById('outname-' + tab.id);
-
   const base       = state.file.name.replace(/\.[^.]+$/, '');
   const outputName = (nameEl.value.trim() || base + '.' + tab.outExt);
 
@@ -1435,13 +1570,58 @@ async function doConvert(tab) {
   form.append('outputName',   outputName);
 
   try {
-    const response = await fetch('/convert', { method: 'POST', body: form });
-    if (!response.ok) {
-      let msg = 'Conversion failed';
-      try { msg = (await response.json()).error || msg; } catch (_) {}
-      throw new Error(msg);
-    }
-    const blob = await response.blob();
+    // ── Stage 1 & 2: Upload then Convert (via XHR for real upload progress) ──
+    const arrayBuf = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/convert');
+      xhr.responseType = 'arraybuffer';
+      xhr.timeout = 300000; // 5 min max
+
+      // Real upload progress
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setStage('upload', pct, `Uploading… ${pct}%`);
+        }
+      };
+
+      // Upload done → server is now converting
+      xhr.upload.onloadend = () => {
+        setStage('convert', 0, 'Converting… this may take a moment', true);
+      };
+
+      // Response body arriving → downloading
+      xhr.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setStage('download', pct, `Downloading… ${pct}%`);
+        } else {
+          setStage('download', 0, 'Downloading…', true);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          setStage('download', 100, 'Done!');
+          resolve(xhr.response);
+        } else {
+          try {
+            const txt = new TextDecoder().decode(xhr.response);
+            reject(new Error(JSON.parse(txt).error || 'Conversion failed'));
+          } catch (_) {
+            reject(new Error(`Conversion failed (${xhr.status})`));
+          }
+        }
+      };
+      xhr.onerror   = () => reject(new Error('Network error'));
+      xhr.ontimeout = () => reject(new Error('Request timed out'));
+
+      setStage('upload', 0, 'Uploading… 0%');
+      xhr.send(form);
+    });
+
+    // ── Stage 3 complete: trigger download ───────────────────────────────────
+    const blob = new Blob([arrayBuf]);
     if (state.outputURL) URL.revokeObjectURL(state.outputURL);
     state.outputURL  = URL.createObjectURL(blob);
     state.outputName = outputName;
@@ -1453,13 +1633,15 @@ async function doConvert(tab) {
     dlBtn.href = state.outputURL; dlBtn.download = outputName;
     dlBtn.classList.add('visible');
 
+    await new Promise(r => setTimeout(r, 700));
+    finish();
     btn.textContent = '✓ Done! Convert again?';
-    btn.classList.remove('btn-loading');
     btn.disabled = false;
+
   } catch (err) {
     console.error('Conversion error:', err);
+    finish();
     btn.textContent = '❌ ' + err.message;
-    btn.classList.remove('btn-loading');
     btn.disabled = false;
   }
 }
