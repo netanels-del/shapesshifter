@@ -3,7 +3,6 @@
 const express = require('express');
 const multer  = require('multer');
 const ffmpeg  = require('fluent-ffmpeg');
-ffmpeg.setFfmpegPath('/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg');
 const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
@@ -65,25 +64,18 @@ function buildScaleFilter(width, aspect) {
   return `scale=${width}:-2`;
 }
 
-const FFMPEG_BIN   = '/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg';
-const FFPROBE_BIN  = '/opt/homebrew/opt/ffmpeg-full/bin/ffprobe';
-const CONVERT_BIN  = '/opt/homebrew/bin/convert'; // ImageMagick
+const isMac       = process.platform === 'darwin';
+const FFMPEG_BIN  = isMac ? '/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg' : 'ffmpeg';
+const FFPROBE_BIN = isMac ? '/opt/homebrew/opt/ffmpeg-full/bin/ffprobe' : 'ffprobe';
+const CONVERT_BIN = isMac ? '/opt/homebrew/bin/convert' : 'convert';
+const FONT_PATH   = isMac
+  ? '/System/Library/Fonts/Helvetica.ttc'
+  : '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf';
 
-// ── Find a usable system font for drawtext ────────────────────────────────────
-function findSystemFont() {
-  const candidates = [
-    '/System/Library/Fonts/Helvetica.ttc',          // macOS — preferred
-    '/System/Library/Fonts/Supplemental/Arial.ttf',
-    '/Library/Fonts/Arial.ttf',
-    '/System/Library/Fonts/Geneva.ttf',
-  ];
-  for (const f of candidates) {
-    if (fs.existsSync(f)) return f;
-  }
-  return null;
-}
-const SYSTEM_FONT = findSystemFont();
-console.log('  System font for drawtext:', SYSTEM_FONT || '(none found — drawtext may fail)');
+ffmpeg.setFfmpegPath(FFMPEG_BIN);
+console.log('  Platform:', isMac ? 'macOS' : 'Linux');
+console.log('  FFMPEG_BIN:', FFMPEG_BIN);
+console.log('  FONT_PATH:', FONT_PATH);
 
 // Wrap execFile in a promise for async/await use
 function run(bin, args, timeout = 60000) {
