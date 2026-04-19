@@ -2642,15 +2642,13 @@ function renderPreview() {
   const ctx = pvCanvas.getContext('2d');
   ctx.drawImage(video, sx, sy, sw, sh, 0, 0, outW, outH);
 
-  // Scale factors from video space to preview canvas space
+  // Scale factors from crop/video space to preview canvas space (for element sizing)
   const scX = outW / sw;
   const scY = outH / sh;
-  // Map video-space absolute pixel to preview canvas pixel
-  const mapX = ax => (ax - sx) * scX;
-  const mapY = ay => (ay - sy) * scY;
-  // Map percentage position to preview canvas pixel
-  const pmX = pct => mapX(pct / 100 * VW);
-  const pmY = pct => mapY(pct / 100 * VH);
+  // Positions are stored as % of the editor canvas (= % of crop region when crop is active).
+  // Map them directly to output canvas coordinates so preview matches the editor.
+  const pmX = pct => pct / 100 * outW;
+  const pmY = pct => pct / 100 * outH;
 
   // Draw caption
   const text = (document.getElementById('cc-caption-text').value || '').trim();
@@ -2786,8 +2784,12 @@ function renderCaptionOverlayDataURL(videoW, videoH) {
     const lines = ccWrapText(ctx, text, maxW - padX * 2);
     const pillH = cc.fontSize + padY * 2;
     const blockH = lines.length * pillH;
-    const centerX = videoW * (cc.posX / 100);
-    const blockY = videoH * (cc.posY / 100) - blockH / 2;
+    const capOriginX = crop.active ? crop.x : 0;
+    const capOriginY = crop.active ? crop.y : 0;
+    const capRgnW    = crop.active ? crop.w : videoW;
+    const capRgnH    = crop.active ? crop.h : videoH;
+    const centerX = capOriginX + capRgnW * (cc.posX / 100);
+    const blockY  = capOriginY + capRgnH * (cc.posY / 100) - blockH / 2;
     const isBow = cc.style === 'bow';
     ctx.fillStyle = isBow ? '#ffffff' : '#000000';
     lines.forEach((line, i) => {

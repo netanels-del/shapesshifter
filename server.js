@@ -462,6 +462,18 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
     });
     console.log(`[burn] ${videoW}x${videoH}`);
 
+    // Crop variables needed for overlay position calculations (STEPS 1–3) and crop (STEP 4)
+    const cropW = parseInt(req.body.cropW) || 0;
+    const cropH = parseInt(req.body.cropH) || 0;
+    const rawCropX = parseInt(req.body.cropX) || 0;
+    const rawCropY = parseInt(req.body.cropY) || 0;
+    const cropX = Math.max(0, Math.min(rawCropX, Math.max(0, videoW - cropW)));
+    const cropY = Math.max(0, Math.min(rawCropY, Math.max(0, videoH - cropH)));
+    const canCrop = cropW > 0 && cropH > 0 && cropW <= videoW && cropH <= videoH;
+    // Positions are stored as % of the output/crop region; convert to full-video pixels
+    const toVX = pct => Math.round((canCrop ? cropX : 0) + pct / 100 * (canCrop ? cropW : videoW));
+    const toVY = pct => Math.round((canCrop ? cropY : 0) + pct / 100 * (canCrop ? cropH : videoH));
+
     const hasCaption = !!(captionText && captionText.trim());
     const useCTA     = ctaEnabled === 'true' && !!(ctaText && ctaText.trim());
     const usePointer = pointerEnabled === 'true' && !!pointerType;
@@ -525,7 +537,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
         const posY     = parseFloat(captionPosY) || 75;
         const isBow    = captionStyle !== 'wob';
         const padX = 16, padY = 8;
-        const maxW = videoW * (maxWpct / 100);
+        const maxW = (canCrop ? cropW : videoW) * (maxWpct / 100);
 
         const capCv  = createCanvas(videoW, videoH);
         const capCtx = capCv.getContext('2d');
@@ -536,8 +548,8 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
         const lines  = wrapLines(capCtx, captionText.trim(), maxW - padX * 2);
         const pillH  = fontSize + padY * 2;
         const blockH = lines.length * pillH;
-        const centerX = videoW * (posX / 100);
-        const blockY  = videoH * (posY / 100) - blockH / 2;
+        const centerX = toVX(posX);
+        const blockY  = toVY(posY) - blockH / 2;
 
         lines.forEach((ln, i) => {
           const lineW = capCtx.measureText(ln).width + padX * 2;
@@ -557,8 +569,8 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
       step1Path = mkTmp('s1.mp4');
       await runStep([
         '-i', currentInput, '-i', capPngPath,
-        '-filter_complex', '[0:v][1:v]overlay=0:0',
-        '-map', '0:a?', '-c:a', 'copy', '-shortest',
+        '-filter_complex', '[0:v][1:v]overlay=0:0[v]',
+        '-map', '[v]', '-map', '0:a?', '-c:a', 'copy', '-shortest',
         ...encodeArgs, step1Path,
       ]);
       currentInput = step1Path;
@@ -637,10 +649,9 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
         try { fs.rmSync(frameDir, { recursive: true, force: true }); } catch (_) {}
       }
 
-      // pixelX = (xPercent / 100) * actualVideoWidth  (ffprobe dims)
-      // elementLeft = pixelX - elementWidth / 2
-      const ctaCX  = Math.round((parseFloat(ctaPosX) / 100) * videoW);
-      const ctaCY  = Math.round((parseFloat(ctaPosY) / 100) * videoH);
+      // Position is % of output/crop region; convert to full-video pixels
+      const ctaCX = toVX(parseFloat(ctaPosX));
+      const ctaCY = toVY(parseFloat(ctaPosY));
       const ovX    = ctaCX - Math.floor(cvW / 2);
       const ovY    = ctaCY - Math.floor(cvH / 2);
 
@@ -665,11 +676,11 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
       if (!fs.existsSync(imgPath)) throw new Error(`Pointer image not found: ${imgFile}`);
 
       const ptrW = parseInt(pointerSize) || 80;
-      // pixelX = (xPercent / 100) * actualVideoWidth  (ffprobe dims)
-      const ptrX = Math.round((parseFloat(pointerPosX) / 100) * videoW);
-      const ptrY = Math.round((parseFloat(pointerPosY) / 100) * videoH);
-      const ctaX = Math.round((parseFloat(ctaPosX) / 100) * videoW);
-      const ctaY = Math.round((parseFloat(ctaPosY) / 100) * videoH);
+      // Position is % of output/crop region; convert to full-video pixels
+      const ptrX = toVX(parseFloat(pointerPosX));
+      const ptrY = toVY(parseFloat(pointerPosY));
+      const ctaX = toVX(parseFloat(ctaPosX));
+      const ctaY = toVY(parseFloat(ctaPosY));
       // PSPEED: frequency in Hz — offsetX = offsetY = 10 * sin(2π * t * PSPEED)
       const pspeed = { slow: 0.8, medium: 1.5, fast: 3.0 }[pointerSpeed] || 1.5;
 
@@ -704,8 +715,8 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
         '-filter_complex',
           `[0:v][1:v]overlay=` +
           `x='${ptrX - half}+${nx}*10*sin(2*PI*t*${pspeed})':` +
-          `y='${ptrY - half}+${ny}*10*sin(2*PI*t*${pspeed})':eval=frame`,
-        '-map', '0:a?', '-c:a', 'copy', '-shortest',
+          `y='${ptrY - half}+${ny}*10*sin(2*PI*t*${pspeed})':eval=frame[v]`,
+        '-map', '[v]', '-map', '0:a?', '-c:a', 'copy', '-shortest',
         ...encodeArgs, step3Path,
       ]);
       currentInput = step3Path;
@@ -715,15 +726,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
     // ── STEP 4: Crop / Scale to output resolution ─────────────────────────────
     const outputWidth  = parseInt(outputWidthStr)  || 0;
     const outputHeight = parseInt(outputHeightStr) || 0;
-    const cropW = parseInt(req.body.cropW) || 0;
-    const cropH = parseInt(req.body.cropH) || 0;
-    // Clamp crop offset so it never causes an out-of-bounds ffmpeg error
-    const rawCropX = parseInt(req.body.cropX) || 0;
-    const rawCropY = parseInt(req.body.cropY) || 0;
-    const cropX = Math.max(0, Math.min(rawCropX, Math.max(0, videoW - cropW)));
-    const cropY = Math.max(0, Math.min(rawCropY, Math.max(0, videoH - cropH)));
-    // Only crop when the requested region fits inside the source video
-    const canCrop = cropW > 0 && cropH > 0 && cropW <= videoW && cropH <= videoH;
+    // cropW/cropH/cropX/cropY/canCrop already defined above (after ffprobe)
     if (outputWidth > 0 || outputHeight > 0 || canCrop) {
       const filters = [];
       if (canCrop) {
@@ -851,6 +854,17 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
   const usePointer = pointerEnabled === 'true' && !!pointerType;
   let currentInput = inputPath;
 
+  // Crop variables needed for overlay positions (STEPS 1–3) and crop (STEP 4)
+  const cropW = parseInt(body.cropW) || 0;
+  const cropH = parseInt(body.cropH) || 0;
+  const rawCropX = parseInt(body.cropX) || 0;
+  const rawCropY = parseInt(body.cropY) || 0;
+  const cropX = Math.max(0, Math.min(rawCropX, Math.max(0, videoW - cropW)));
+  const cropY = Math.max(0, Math.min(rawCropY, Math.max(0, videoH - cropH)));
+  const canCrop = cropW > 0 && cropH > 0 && cropW <= videoW && cropH <= videoH;
+  const toVX = pct => Math.round((canCrop ? cropX : 0) + pct / 100 * (canCrop ? cropW : videoW));
+  const toVY = pct => Math.round((canCrop ? cropY : 0) + pct / 100 * (canCrop ? cropH : videoH));
+
   const videoSpeed = parseFloat(videoSpeedStr) || 1.0;
   const trimStart  = parseFloat(trimStartStr)  || 0;
   const trimEnd    = parseFloat(trimEndStr)    || 0;
@@ -900,12 +914,12 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
       const posY     = parseFloat(captionPosY) || 75;
       const isBow    = captionStyle !== 'wob';
       const padX = 16, padY = 8;
-      const maxW = videoW * (maxWpct / 100);
+      const maxW = (canCrop ? cropW : videoW) * (maxWpct / 100);
       const capCv = createCanvas(videoW, videoH); const capCtx = capCv.getContext('2d');
       capCtx.font = `bold ${fontSize}px Arial, sans-serif`; capCtx.textBaseline = 'middle'; capCtx.textAlign = 'center';
       const lines = wrapLines(capCtx, captionText.trim(), maxW - padX * 2);
       const pillH = fontSize + padY * 2; const blockH = lines.length * pillH;
-      const centerX = videoW * (posX / 100); const blockY = videoH * (posY / 100) - blockH / 2;
+      const centerX = toVX(posX); const blockY = toVY(posY) - blockH / 2;
       lines.forEach((ln, i) => {
         const lineW = capCtx.measureText(ln).width + padX * 2;
         const pillX = centerX - lineW / 2; const pillY = blockY + i * pillH;
@@ -918,7 +932,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
       fs.writeFileSync(capPngPath, capCv.toBuffer('image/png'));
     }
     step1Path = mkTmp('s1.mp4');
-    await runStep(['-i', currentInput, '-i', capPngPath, '-filter_complex', '[0:v][1:v]overlay=0:0', '-map', '0:a?', '-c:a', 'copy', '-shortest', ...encodeArgs, step1Path]);
+    await runStep(['-i', currentInput, '-i', capPngPath, '-filter_complex', '[0:v][1:v]overlay=0:0[v]', '-map', '[v]', '-map', '0:a?', '-c:a', 'copy', '-shortest', ...encodeArgs, step1Path]);
     currentInput = step1Path;
   }
   setProgress(35);
@@ -950,8 +964,8 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
       const ctaAnimPath = mkTmp('cta_anim.mp4'); ctaPngPath = ctaAnimPath;
       await runStep(['-framerate', String(fps), '-i', path.join(frameDir, 'frame_%03d.png'), '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', ctaAnimPath]);
     } finally { try { fs.rmSync(frameDir, { recursive: true, force: true }); } catch (_) {} }
-    const ctaCX = Math.round((parseFloat(ctaPosX) || 50) / 100 * videoW);
-    const ctaCY = Math.round((parseFloat(ctaPosY) || 88) / 100 * videoH);
+    const ctaCX = toVX(parseFloat(ctaPosX) || 50);
+    const ctaCY = toVY(parseFloat(ctaPosY) || 88);
     const ovX = ctaCX - Math.floor(cvW / 2); const ovY = ctaCY - Math.floor(cvH / 2);
     step2Path = mkTmp('s2.mp4');
     await runStep(['-i', currentInput, '-stream_loop', '-1', '-i', ctaPngPath, '-filter_complex', `[1:v]colorkey=0x00ff00:0.3:0.1[ctakeyed];[0:v][ctakeyed]overlay=x=${ovX}:y=${ovY}:shortest=1[out]`, '-map', '[out]', '-map', '0:a?', '-c:a', 'copy', ...encodeArgs, step2Path]);
@@ -964,10 +978,10 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
     const imgPath = path.join(__dirname, imgFile);
     if (!fs.existsSync(imgPath)) throw new Error(`Pointer image not found: ${imgFile}`);
     const ptrW = parseInt(pointerSize) || 80;
-    const ptrX = Math.round((parseFloat(pointerPosX) || 35) / 100 * videoW);
-    const ptrY = Math.round((parseFloat(pointerPosY) || 88) / 100 * videoH);
-    const ctaX = Math.round((parseFloat(ctaPosX) || 50) / 100 * videoW);
-    const ctaY = Math.round((parseFloat(ctaPosY) || 88) / 100 * videoH);
+    const ptrX = toVX(parseFloat(pointerPosX) || 35);
+    const ptrY = toVY(parseFloat(pointerPosY) || 88);
+    const ctaX = toVX(parseFloat(ctaPosX) || 50);
+    const ctaY = toVY(parseFloat(ctaPosY) || 88);
     const dur  = { slow: '1.5', medium: '0.9', fast: '0.4' }[pointerSpeed] || '0.9';
     const dx = ctaX - ptrX; const dy = ctaY - ptrY;
     const len = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -984,18 +998,14 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
     fs.writeFileSync(ptrPngPath, ptrCv.toBuffer('image/png'));
     const half = Math.floor(diag / 2);
     step3Path = mkTmp('s3.mp4');
-    await runStep(['-i', currentInput, '-i', ptrPngPath, '-filter_complex', `[0:v][1:v]overlay=x='${ptrX - half}+${nx}*8*sin(2*PI*t/${dur})':y='${ptrY - half}+${ny}*8*sin(2*PI*t/${dur})':eval=frame`, '-map', '0:a?', '-c:a', 'copy', '-shortest', ...encodeArgs, step3Path]);
+    await runStep(['-i', currentInput, '-i', ptrPngPath, '-filter_complex', `[0:v][1:v]overlay=x='${ptrX - half}+${nx}*8*sin(2*PI*t/${dur})':y='${ptrY - half}+${ny}*8*sin(2*PI*t/${dur})':eval=frame[v]`, '-map', '[v]', '-map', '0:a?', '-c:a', 'copy', '-shortest', ...encodeArgs, step3Path]);
     currentInput = step3Path;
   }
   setProgress(90);
 
   const outputWidth  = parseInt(outputWidthStr)  || 0;
   const outputHeight = parseInt(outputHeightStr) || 0;
-  const cropW = parseInt(body.cropW) || 0; const cropH = parseInt(body.cropH) || 0;
-  const rawCropX = parseInt(body.cropX) || 0; const rawCropY = parseInt(body.cropY) || 0;
-  const cropX = Math.max(0, Math.min(rawCropX, Math.max(0, videoW - cropW)));
-  const cropY = Math.max(0, Math.min(rawCropY, Math.max(0, videoH - cropH)));
-  const canCrop = cropW > 0 && cropH > 0 && cropW <= videoW && cropH <= videoH;
+  // cropW/cropH/cropX/cropY/canCrop already defined above (after ffprobe)
   if (outputWidth > 0 || outputHeight > 0 || canCrop) {
     const filters = [];
     if (canCrop) filters.push(`crop=${cropW}:${cropH}:${cropX}:${cropY}`);
