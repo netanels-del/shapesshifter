@@ -1103,8 +1103,13 @@ async function burnLoopedEndpoint(req, res, targetDuration) {
         if (hasAudio) afParts.push(...buildAtempoChain(videoSpeed));
       }
       if (vfParts.length) s0Args.push('-vf', vfParts.join(','));
-      if (afParts.length) s0Args.push('-af', afParts.join(','), '-map', '0:a?');
-      else s0Args.push('-map', '0:a?', '-c:a', 'copy');
+      if (afParts.length) {
+        // Explicit audio filter: map both video and audio explicitly
+        s0Args.push('-af', afParts.join(','), '-map', '0:v', '-map', '0:a?');
+      } else {
+        // No audio filter: let ffmpeg auto-select all streams (video + audio)
+        s0Args.push('-c:a', 'copy');
+      }
       step0Path = mkTmp('s0.mp4');
       s0Args.push(...encodeArgs, step0Path);
       await runStep(s0Args);
