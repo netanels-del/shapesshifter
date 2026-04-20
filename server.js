@@ -1116,38 +1116,16 @@ async function burnLoopedEndpoint(req, res, targetDuration) {
       clipPath = step0Path;
     }
 
-    // ── Calculate how many loops needed ──────────────────────────────────────
+    // ── Loop clip to exact target duration via stream_loop (no concat, clean timestamps) ──
     const rawEnd      = trimEnd > 0 ? trimEnd : videoDuration;
     const rawDuration = Math.max(0.01, rawEnd - trimStart);
     const effectiveDur = rawDuration / videoSpeed;
     if (effectiveDur <= 0) throw new Error('Cannot determine loop duration');
-
-    setProgress(10);
-    // Add 2 extra loops as a buffer so the concat is always longer than targetDuration,
-    // ensuring the re-encode trim below always has enough footage to cut from.
     const loops = Math.ceil(targetDuration / effectiveDur) + 2;
 
-    // ── Concat clips ─────────────────────────────────────────────────────────
-    concatPath = path.join(os.tmpdir(), `vfe_concat_${Date.now()}_${rand}.txt`);
-    const concatLines = [];
-    for (let i = 0; i < loops; i++) concatLines.push(`file '${clipPath.replace(/'/g, "'\\''")}'`);
-    fs.writeFileSync(concatPath, concatLines.join('\n') + '\n');
-
-    joinedPath = path.join(os.tmpdir(), `vfe_joined_${Date.now()}_${rand}.mp4`);
-    await new Promise((resolve, reject) => {
-      let done = false;
-      const proc = execFile(FFMPEG_BIN, ['-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', joinedPath], {}, (err, stdout, stderr) => {
-        if (done) return; done = true;
-        if (err) reject(new Error(err.message + (stderr ? '\n' + stderr.slice(-300) : '')));
-        else resolve();
-      });
-      setTimeout(() => { if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error('concat timed out')); } }, 300000);
-    });
-    setProgress(25);
-
-    // ── Trim to exact target duration (re-encode for frame-accurate cut) ──────
+    setProgress(10);
     trimmedPath = path.join(os.tmpdir(), `vfe_trimmed_${Date.now()}_${rand}.mp4`);
-    await runStep(['-fflags', '+genpts', '-avoid_negative_ts', 'make_zero', '-i', joinedPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
+    await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
     setProgress(35);
 
     // ── Apply overlays (caption, CTA, pointer, crop/scale) to the FULL video ─
@@ -1283,25 +1261,8 @@ async function burnVerticalEndpoint(req, res, targetDuration) {
       const loops = Math.ceil(targetDuration / effectiveDur) + 2;
       setProgress(12);
 
-      concatPath = mkTmp('concat.txt');
-      const concatLines = [];
-      for (let i = 0; i < loops; i++) concatLines.push(`file '${clipPath.replace(/'/g, "'\\''")}'`);
-      fs.writeFileSync(concatPath, concatLines.join('\n') + '\n');
-
-      joinedPath = mkTmp('joined.mp4');
-      await new Promise((resolve, reject) => {
-        let done = false;
-        const proc = execFile(FFMPEG_BIN, ['-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', joinedPath], {}, (err, stdout, stderr) => {
-          if (done) return; done = true;
-          if (err) reject(new Error(err.message + (stderr ? '\n' + stderr.slice(-300) : '')));
-          else resolve();
-        });
-        setTimeout(() => { if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error('concat timed out')); } }, 300000);
-      });
-      setProgress(22);
-
       trimmedPath = mkTmp('trimmed.mp4');
-      await runStep(['-fflags', '+genpts', '-avoid_negative_ts', 'make_zero', '-i', joinedPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
+      await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
       setProgress(30);
       processPath = trimmedPath;
     }
