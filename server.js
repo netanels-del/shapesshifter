@@ -1147,7 +1147,7 @@ async function burnLoopedEndpoint(req, res, targetDuration) {
 
     // ── Trim to exact target duration (re-encode for frame-accurate cut) ──────
     trimmedPath = path.join(os.tmpdir(), `vfe_trimmed_${Date.now()}_${rand}.mp4`);
-    await runStep(['-i', joinedPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
+    await runStep(['-fflags', '+genpts', '-avoid_negative_ts', 'make_zero', '-i', joinedPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
     setProgress(35);
 
     // ── Apply overlays (caption, CTA, pointer, crop/scale) to the FULL video ─
@@ -1262,8 +1262,11 @@ async function burnVerticalEndpoint(req, res, targetDuration) {
         if (hasAudio) afParts.push(...buildAtempoChain(videoSpeed));
       }
       if (vfParts.length) s0Args.push('-vf', vfParts.join(','));
-      if (afParts.length) s0Args.push('-af', afParts.join(','), '-map', '0:a?');
-      else s0Args.push('-map', '0:a?', '-c:a', 'copy');
+      if (afParts.length) {
+        s0Args.push('-af', afParts.join(','), '-map', '0:v', '-map', '0:a?');
+      } else {
+        s0Args.push('-c:a', 'copy');
+      }
       step0Path = mkTmp('s0.mp4');
       s0Args.push(...encodeArgs, step0Path);
       await runStep(s0Args);
@@ -1298,7 +1301,7 @@ async function burnVerticalEndpoint(req, res, targetDuration) {
       setProgress(22);
 
       trimmedPath = mkTmp('trimmed.mp4');
-      await runStep(['-i', joinedPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
+      await runStep(['-fflags', '+genpts', '-avoid_negative_ts', 'make_zero', '-i', joinedPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
       setProgress(30);
       processPath = trimmedPath;
     }
