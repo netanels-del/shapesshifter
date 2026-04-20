@@ -1015,7 +1015,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
     const vfFilter = filters.join(',');
     if (vfFilter) {
       step4Path = mkTmp('s4.mp4');
-      await runStep(['-i', currentInput, '-vf', vfFilter, '-map', '0:a?', '-c:a', 'copy', ...encodeArgs, step4Path]);
+      await runStep(['-i', currentInput, '-vf', vfFilter, '-map', '0:v', '-map', '0:a?', '-c:a', 'copy', ...encodeArgs, step4Path]);
       currentInput = step4Path;
     }
   }
