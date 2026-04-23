@@ -868,6 +868,8 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
   const videoSpeed = parseFloat(videoSpeedStr) || 1.0;
   const trimStart  = parseFloat(trimStartStr)  || 0;
   const trimEnd    = parseFloat(trimEndStr)    || 0;
+  const muteAudio  = body.muteAudio === 'true';
+  const audioPassArgs = muteAudio ? ['-an'] : ['-map', '0:a?', '-c:a', 'copy'];
 
   function buildAtempoChain(spd) {
     const parts = []; let s = spd;
@@ -890,7 +892,8 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
       if (hasAudio) afParts.push(...buildAtempoChain(videoSpeed));
     }
     if (vfParts.length) s0Args.push('-vf', vfParts.join(','));
-    if (afParts.length) { s0Args.push('-af', afParts.join(','), '-map', '0:a?'); }
+    if (muteAudio) { s0Args.push('-an'); }
+    else if (afParts.length) { s0Args.push('-af', afParts.join(','), '-map', '0:a?'); }
     else { s0Args.push('-map', '0:a?', '-c:a', 'copy'); }
     step0Path = mkTmp('s0.mp4');
     s0Args.push(...encodeArgs, step0Path);
@@ -932,7 +935,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
       fs.writeFileSync(capPngPath, capCv.toBuffer('image/png'));
     }
     step1Path = mkTmp('s1.mp4');
-    await runStep(['-i', currentInput, '-i', capPngPath, '-filter_complex', '[0:v][1:v]overlay=0:0[v]', '-map', '[v]', '-map', '0:a?', '-c:a', 'copy', '-shortest', ...encodeArgs, step1Path]);
+    await runStep(['-i', currentInput, '-i', capPngPath, '-filter_complex', '[0:v][1:v]overlay=0:0[v]', '-map', '[v]', ...audioPassArgs, '-shortest', ...encodeArgs, step1Path]);
     currentInput = step1Path;
   }
   setProgress(35);
@@ -968,7 +971,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
     const ctaCY = toVY(parseFloat(ctaPosY) || 88);
     const ovX = ctaCX - Math.floor(cvW / 2); const ovY = ctaCY - Math.floor(cvH / 2);
     step2Path = mkTmp('s2.mp4');
-    await runStep(['-i', currentInput, '-stream_loop', '-1', '-i', ctaPngPath, '-filter_complex', `[1:v]colorkey=0x00ff00:0.3:0.1[ctakeyed];[0:v][ctakeyed]overlay=x=${ovX}:y=${ovY}:shortest=1[out]`, '-map', '[out]', '-map', '0:a?', '-c:a', 'copy', ...encodeArgs, step2Path]);
+    await runStep(['-i', currentInput, '-stream_loop', '-1', '-i', ctaPngPath, '-filter_complex', `[1:v]colorkey=0x00ff00:0.3:0.1[ctakeyed];[0:v][ctakeyed]overlay=x=${ovX}:y=${ovY}:shortest=1[out]`, '-map', '[out]', ...audioPassArgs, ...encodeArgs, step2Path]);
     currentInput = step2Path;
   }
   setProgress(65);
@@ -998,7 +1001,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
     fs.writeFileSync(ptrPngPath, ptrCv.toBuffer('image/png'));
     const half = Math.floor(diag / 2);
     step3Path = mkTmp('s3.mp4');
-    await runStep(['-i', currentInput, '-i', ptrPngPath, '-filter_complex', `[0:v][1:v]overlay=x='${ptrX - half}+${nx}*8*sin(2*PI*t/${dur})':y='${ptrY - half}+${ny}*8*sin(2*PI*t/${dur})':eval=frame[v]`, '-map', '[v]', '-map', '0:a?', '-c:a', 'copy', '-shortest', ...encodeArgs, step3Path]);
+    await runStep(['-i', currentInput, '-i', ptrPngPath, '-filter_complex', `[0:v][1:v]overlay=x='${ptrX - half}+${nx}*8*sin(2*PI*t/${dur})':y='${ptrY - half}+${ny}*8*sin(2*PI*t/${dur})':eval=frame[v]`, '-map', '[v]', ...audioPassArgs, '-shortest', ...encodeArgs, step3Path]);
     currentInput = step3Path;
   }
   setProgress(90);
@@ -1015,7 +1018,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
     const vfFilter = filters.join(',');
     if (vfFilter) {
       step4Path = mkTmp('s4.mp4');
-      await runStep(['-i', currentInput, '-vf', vfFilter, '-map', '0:v', '-map', '0:a?', '-c:a', 'copy', ...encodeArgs, step4Path]);
+      await runStep(['-i', currentInput, '-vf', vfFilter, '-map', '0:v', ...audioPassArgs, ...encodeArgs, step4Path]);
       currentInput = step4Path;
     }
   }

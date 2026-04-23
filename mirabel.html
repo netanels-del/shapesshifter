@@ -1693,6 +1693,22 @@ header p {
             </div>
           </div>
 
+          <!-- 8. Sound -->
+          <div class="cc-section">
+            <div class="cc-section-head">Sound</div>
+            <div class="cc-section-body">
+              <div class="field">
+                <div class="cc-show-row">
+                  <div class="cc-editor-label">Include audio</div>
+                  <label class="cta-toggle">
+                    <input type="checkbox" id="cc-sound-toggle" checked>
+                    <span class="cta-toggle-track"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
           </div><!-- .cc-sidebar-scroll -->
         </div><!-- .cc-sidebar -->
 
@@ -1959,6 +1975,22 @@ header p {
                 <div class="cc-speed-btns" id="vc-quality-btns">
                   <button class="cc-speed-btn active" onclick="selectVCQuality('720p',this)">720p</button>
                   <button class="cc-speed-btn" onclick="selectVCQuality('HD',this)">HD</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 8. Sound -->
+          <div class="cc-section">
+            <div class="cc-section-head">Sound</div>
+            <div class="cc-section-body">
+              <div class="field">
+                <div class="cc-show-row">
+                  <div class="cc-editor-label">Include audio</div>
+                  <label class="cta-toggle">
+                    <input type="checkbox" id="vc-sound-toggle" checked>
+                    <span class="cta-toggle-track"></span>
+                  </label>
                 </div>
               </div>
             </div>
@@ -3387,6 +3419,7 @@ async function burnCaptions() {
   form.append('cropY',          crop.active ? String(Math.round(crop.y)) : '0');
   form.append('cropW',          crop.active ? String(Math.round(crop.w)) : '0');
   form.append('cropH',          crop.active ? String(Math.round(crop.h)) : '0');
+  form.append('muteAudio',      document.getElementById('cc-sound-toggle').checked ? 'false' : 'true');
 
   try {
     const res = await fetch('/api/burn-captions', { method: 'POST', body: form });
@@ -3482,6 +3515,7 @@ async function burnLooped(targetDuration) {
   form.append('cropW',          crop.active ? String(Math.round(crop.w)) : '0');
   form.append('cropH',          crop.active ? String(Math.round(crop.h)) : '0');
   form.append('targetDuration', String(targetDuration));
+  form.append('muteAudio',      document.getElementById('cc-sound-toggle').checked ? 'false' : 'true');
 
   try {
     const res = await fetch(`/api/burn-${targetDuration}s`, { method: 'POST', body: form });
@@ -4262,6 +4296,7 @@ async function burnVertical() {
   form.append('trimEnd',        document.getElementById('vc-trim-end').value   || '0');
   const vcFnameVal = document.getElementById('vc-output-name')?.value.trim();
   form.append('outputName',     (vcFnameVal || file.name.replace(/\.[^.]+$/, '')) + (tgt ? `_${tgt}s.mp4` : '.mp4'));
+  form.append('muteAudio',      document.getElementById('vc-sound-toggle').checked ? 'false' : 'true');
 
   try {
     const res = await fetch(endpoint, { method: 'POST', body: form });
