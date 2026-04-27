@@ -1,13 +1,56 @@
 'use strict';
 
+require('dotenv').config();
+
 const express = require('express');
 const multer  = require('multer');
 const ffmpeg  = require('fluent-ffmpeg');
 const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
+const https   = require('https');
 const { execSync, execFile } = require('child_process');
 const { createCanvas, loadImage } = require('canvas');
+const jwt     = require('jsonwebtoken');
+
+// ── Kling AI helpers ──────────────────────────────────────────────────────────
+function generateKlingJWT() {
+  const now = Math.floor(Date.now() / 1000);
+  return jwt.sign(
+    { iss: process.env.KLING_ACCESS_KEY, exp: now + 1800, nbf: now - 5 },
+    process.env.KLING_SECRET_KEY,
+    { algorithm: 'HS256' }
+  );
+}
+
+function klingRequest(method, apiPath, body) {
+  return new Promise((resolve, reject) => {
+    const token = generateKlingJWT();
+    const data  = body ? JSON.stringify(body) : null;
+    const opts  = {
+      hostname: 'api.klingai.com',
+      path:     apiPath,
+      method,
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type':  'application/json',
+        ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
+      },
+    };
+    const req = https.request(opts, res => {
+      let raw = '';
+      res.on('data', c => raw += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(raw)); }
+        catch (e) { reject(new Error('Kling response parse error: ' + raw.slice(0, 300))); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Kling request timed out')); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
 
 const PORT = process.env.PORT || 3000;
 const app  = express();
@@ -1796,6 +1839,66 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
   } finally {
     if (inputPath) { try { fs.unlinkSync(inputPath); } catch(_) {} }
   }
+});
+
+// ── Kling AI: generate video ──────────────────────────────────────────────────
+app.post('/api/generate-video', express.json({ limit: '20mb' }), async (req, res) => {
+  try {
+    const { image, prompt, duration, mode } = req.body;
+    if (!image) return res.status(400).json({ error: 'No image provided' });
+
+    const result = await klingRequest('POST', '/v1/videos/image2video', {
+      model_name: 'kling-v2-5-turbo',
+      image,
+      prompt:   prompt || 'Static camera, slightly animate',
+      duration: String(duration || 5),
+      mode:     mode   || 'std',
+    });
+
+    if (result.code !== 0) throw new Error(result.message || 'Kling API error');
+    res.json({ task_id: result.data.task_id });
+  } catch (err) {
+    console.error('[generate-video]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Kling AI: poll task status ────────────────────────────────────────────────
+app.get('/api/video-status/:taskId', async (req, res) => {
+  try {
+    const result = await klingRequest('GET', `/v1/videos/image2video/${req.params.taskId}`, null);
+    if (result.code !== 0) throw new Error(result.message || 'Kling API error');
+    const data      = result.data;
+    const video_url = data.task_result?.videos?.[0]?.url || null;
+    res.json({ status: data.task_status, video_url });
+  } catch (err) {
+    console.error('[video-status]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Kling AI: proxy video (avoids COEP cross-origin restrictions) ─────────────
+app.get('/api/proxy-video', (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'Missing url' });
+  let parsed;
+  try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'Invalid url' }); }
+  // Only allow Kling CDN domains
+  if (!parsed.hostname.endsWith('kling.ai') && !parsed.hostname.endsWith('klingai.com')) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  https.get(url, proxyRes => {
+    res.setHeader('Content-Type',  proxyRes.headers['content-type'] || 'video/mp4');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    if (proxyRes.headers['content-length']) {
+      res.setHeader('Content-Length', proxyRes.headers['content-length']);
+    }
+    const dl = req.query.download;
+    if (dl) res.setHeader('Content-Disposition', `attachment; filename="${dl}"`);
+    proxyRes.pipe(res);
+  }).on('error', err => {
+    if (!res.headersSent) res.status(502).json({ error: err.message });
+  });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

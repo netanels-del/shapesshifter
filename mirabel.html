@@ -1408,14 +1408,16 @@ header p {
   margin-left: auto;
   padding: 8px 18px;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(255,109,0,0.2);
-  background: rgba(255,109,0,0.04);
-  color: rgba(255,171,64,0.45);
+  border: 1px solid rgba(255,109,0,0.35);
+  background: rgba(255,109,0,0.08);
+  color: #ffab40;
   font-size: 0.85rem;
   font-weight: 600;
   font-family: inherit;
-  cursor: default;
+  cursor: pointer;
+  transition: all 0.2s;
 }
+.gen-player-dl-btn:hover { background: rgba(255,109,0,0.18); border-color: #ff6d00; color: #fff; }
 
 /* ── Gen: CTA row (two buttons) ───────────────────────────────────────────── */
 .gen-cta-row {
@@ -1534,12 +1536,14 @@ header p {
 
   </div><!-- .gen-section -->
 
-  <!-- ── Gen: video player placeholder (shown after generation) ────────── -->
+  <!-- ── Gen: video player (shown after generation) ───────────────────── -->
   <div class="gen-player" id="gen-player">
-    <div class="gen-player-screen"></div>
+    <div class="gen-player-screen" id="gen-player-screen">
+      <video id="gen-video" playsinline style="display:none;width:100%;height:100%;border-radius:inherit;object-fit:contain;"></video>
+    </div>
     <div class="gen-player-controls">
       <button class="gen-player-btn" id="gen-play-btn" onclick="genTogglePlay()">▶</button>
-      <button class="gen-player-dl-btn">⬇ Download</button>
+      <button class="gen-player-dl-btn" id="gen-dl-btn" onclick="genDownload()">⬇ Download</button>
     </div>
   </div>
 
@@ -2257,9 +2261,14 @@ function genRemove(slot, e) {
   }
 }
 
-function genGenerate() {
+async function genGenerate() {
   const btn = document.getElementById('gen-generate-btn');
   if (btn.classList.contains('loading')) return;
+  if (!genState.startFile) {
+    alert('Please upload a Start Frame image first.');
+    return;
+  }
+
   btn.classList.add('loading');
   btn.textContent = '⏳ Generating...';
 
@@ -2271,30 +2280,130 @@ function genGenerate() {
   pctEl.textContent = '0%';
   overlay.classList.add('visible');
 
-  const duration = 3000;
-  const start    = performance.now();
+  // Convert image file → raw base64 (strip data URI prefix)
+  const base64 = await new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result.split(',')[1]);
+    reader.readAsDataURL(genState.startFile);
+  });
 
-  function step(now) {
-    const pct = Math.min(100, ((now - start) / duration) * 100);
-    bar.style.width   = pct + '%';
-    pctEl.textContent = Math.round(pct) + '%';
-    if (pct < 100) {
-      requestAnimationFrame(step);
-    } else {
-      setTimeout(() => {
-        overlay.classList.remove('visible');
-        btn.classList.remove('loading');
-        btn.textContent = '🎬 Generate Video';
-        document.getElementById('gen-player').classList.add('visible');
-      }, 350);
-    }
+  const mode = genState.res === 1080 ? 'pro' : 'std';
+
+  // Submit generation task
+  let taskId  = null;
+  let genError = null;
+  try {
+    const r = await fetch('/api/generate-video', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        image:    base64,
+        prompt:   document.getElementById('gen-prompt').value || 'Static camera, slightly animate',
+        duration: genState.dur,
+        mode,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Server error');
+    taskId = d.task_id;
+  } catch (err) {
+    genError = err.message;
   }
-  requestAnimationFrame(step);
+
+  if (genError) {
+    overlay.classList.remove('visible');
+    btn.classList.remove('loading');
+    btn.textContent = '🎬 Generate Video';
+    alert('Generation failed: ' + genError);
+    return;
+  }
+
+  // Animate progress asymptotically toward 90% while we poll (videos take 1–3 min)
+  // Formula: pct = 90 * (1 - e^(-elapsed/90s))  →  reaches ~63% at 90s, ~86% at 180s
+  let animStopped = false;
+  const pollStart = performance.now();
+  function animateProgress(now) {
+    if (animStopped) return;
+    const elapsed = now - pollStart;
+    const pct = 90 * (1 - Math.exp(-elapsed / 90000));
+    bar.style.width   = pct.toFixed(1) + '%';
+    pctEl.textContent = Math.round(pct) + '%';
+    requestAnimationFrame(animateProgress);
+  }
+  requestAnimationFrame(animateProgress);
+
+  // Poll every 5 seconds until succeed or failed
+  let videoUrl = null;
+  while (!videoUrl && !genError) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const r = await fetch('/api/video-status/' + taskId);
+      const d = await r.json();
+      if (d.status === 'succeed' && d.video_url) {
+        videoUrl = d.video_url;
+      } else if (d.status === 'failed') {
+        genError = 'Kling reported generation failed';
+      }
+    } catch (_) {}
+  }
+
+  animStopped = true;
+
+  if (genError || !videoUrl) {
+    overlay.classList.remove('visible');
+    btn.classList.remove('loading');
+    btn.textContent = '🎬 Generate Video';
+    alert(genError || 'Generation failed — no video URL returned');
+    return;
+  }
+
+  // Jump bar to 100%, then show player
+  bar.style.transition = 'width 0.5s ease-out';
+  bar.style.width      = '100%';
+  pctEl.textContent    = '100%';
+
+  // Store proxied URL so COEP doesn't block cross-origin video
+  genState.videoUrl = '/api/proxy-video?url=' + encodeURIComponent(videoUrl);
+  genState.rawVideoUrl = videoUrl;
+
+  setTimeout(() => {
+    bar.style.transition = '';
+    overlay.classList.remove('visible');
+    btn.classList.remove('loading');
+    btn.textContent = '🎬 Generate Video';
+
+    const video = document.getElementById('gen-video');
+    video.src = genState.videoUrl;
+    video.style.display = 'block';
+    video.onended = () => {
+      document.getElementById('gen-play-btn').textContent = '▶';
+    };
+    document.getElementById('gen-player').classList.add('visible');
+  }, 600);
 }
 
 function genTogglePlay() {
-  const btn = document.getElementById('gen-play-btn');
-  btn.textContent = btn.textContent === '▶' ? '⏸' : '▶';
+  const btn   = document.getElementById('gen-play-btn');
+  const video = document.getElementById('gen-video');
+  if (video.src && !video.src.endsWith('/mirabel.html')) {
+    if (video.paused) { video.play(); btn.textContent = '⏸'; }
+    else              { video.pause(); btn.textContent = '▶'; }
+  } else {
+    btn.textContent = btn.textContent === '▶' ? '⏸' : '▶';
+  }
+}
+
+async function genDownload() {
+  if (!genState.videoUrl) return;
+  const fname = (document.getElementById('gen-fname').value || 'generated') + '.mp4';
+  // Use proxy URL with download flag so server sets Content-Disposition
+  const dlUrl = '/api/proxy-video?url=' + encodeURIComponent(genState.rawVideoUrl || genState.videoUrl) + '&download=' + encodeURIComponent(fname);
+  const a = document.createElement('a');
+  a.href = dlUrl;
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 // Wire file inputs
