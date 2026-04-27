@@ -553,13 +553,16 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
       }
       if (vfParts.length) s0Args.push('-vf', vfParts.join(','));
       if (afParts.length) {
-        s0Args.push('-af', afParts.join(','), '-map', '0:a?');
+        // Audio filter present: explicitly map both video and audio streams
+        s0Args.push('-af', afParts.join(','), '-map', '0:v', '-map', '0:a?');
       } else {
-        s0Args.push('-map', '0:a?', '-c:a', 'copy');
+        // No audio filter: no explicit -map so ffmpeg auto-selects video + audio
+        s0Args.push('-c:a', 'copy');
       }
       step0Path = mkTmp('s0.mp4');
       s0Args.push(...encodeArgs, step0Path);
       await runStep(s0Args);
+      if (!fs.existsSync(step0Path)) throw new Error('Step 0 produced no output');
       currentInput = step0Path;
     }
 
@@ -786,7 +789,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
         await runStep([
           '-i', currentInput,
           '-vf', vfFilter,
-          '-map', '0:a?', '-c:a', 'copy',
+          '-map', '0:v', '-map', '0:a?', '-c:a', 'copy',
           ...encodeArgs, step4Path,
         ]);
         currentInput = step4Path;

@@ -2434,14 +2434,42 @@ function toggleOrientationPicker() {
   }
 }
 
-function selectCaptionOrientation(dir) {
+async function selectCaptionOrientation(dir) {
+  // Capture clicked button before any awaits (event object is gone after async)
+  const clickedBtn = (typeof event !== 'undefined' && event && event.currentTarget) || null;
+
+  // Navigate to the correct panel
   document.querySelectorAll('.orientation-btn').forEach(b => b.classList.remove('active'));
-  if (event && event.currentTarget) event.currentTarget.classList.add('active');
+  if (clickedBtn) clickedBtn.classList.add('active');
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('visible'));
   if (dir === 'horizontal') {
     document.getElementById('panel-cc').classList.add('visible');
   } else if (dir === 'vertical') {
     document.getElementById('panel-vc').classList.add('visible');
+  }
+
+  // Flow B: if a video was generated in Image to Video, auto-load it into this tab
+  if (!genState.videoUrl) return;  // Flow A: nothing to auto-load, done
+
+  const origHTML = clickedBtn ? clickedBtn.innerHTML : '';
+  if (clickedBtn) { clickedBtn.disabled = true; clickedBtn.innerHTML = '⏳ Loading video...'; }
+
+  try {
+    const resp = await fetch(genState.videoUrl);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob  = await resp.blob();
+    const fname = (document.getElementById('gen-fname').value || 'generated') + '.mp4';
+    const file  = new File([blob], fname, { type: blob.type || 'video/mp4' });
+
+    if (dir === 'horizontal' && window.ccHandleFile) {
+      window.ccHandleFile(file);
+    } else if (dir === 'vertical' && window.vcHandleFile) {
+      window.vcHandleFile(file);
+    }
+  } catch (err) {
+    console.error('[selectCaptionOrientation] auto-load failed:', err);
+  } finally {
+    if (clickedBtn) { clickedBtn.disabled = false; clickedBtn.innerHTML = origHTML; }
   }
 }
 
@@ -2725,6 +2753,9 @@ ptrImages.hand.src  = 'handCTA.png';
       updateScrubberTrimStyle();
     }, { once: true });
   }
+
+  // Expose so Flow B (Image to Video → Add Captions) can call it programmatically
+  window.ccHandleFile = handleCCFile;
 })();
 
 function removeCCVideo() {
@@ -4166,6 +4197,9 @@ function syncVCAnimLoop() {
       };
     }, { once: true });
   }
+
+  // Expose so Flow B (Image to Video → Add Captions) can call it programmatically
+  window.vcHandleFile = handleVCFile;
 })();
 
 function removeVCVideo() {
