@@ -1315,6 +1315,114 @@ header p {
   white-space: nowrap;
 }
 .gen-divider:hover .gen-divider-text { color: #fff; }
+
+/* ── Gen: generation overlay ──────────────────────────────────────────────── */
+.gen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s;
+}
+.gen-overlay.visible { opacity: 1; pointer-events: all; }
+.gen-overlay-box {
+  background: #1c1c1e;
+  border: 1px solid rgba(255,109,0,0.3);
+  border-radius: 20px;
+  padding: 40px 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  min-width: 300px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+}
+.gen-overlay-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ffab40;
+  letter-spacing: 0.3px;
+}
+.gen-overlay-bar-wrap {
+  width: 100%;
+  height: 8px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 100px;
+  overflow: hidden;
+}
+.gen-overlay-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #ff6b00, #ff9a3c);
+  border-radius: 100px;
+}
+.gen-overlay-pct {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: #fff;
+  min-width: 60px;
+  text-align: center;
+}
+
+/* ── Gen: video player placeholder ───────────────────────────────────────── */
+.gen-player {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.gen-player.visible { display: flex; }
+.gen-player-screen {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: var(--radius);
+}
+.gen-player-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gen-player-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,109,0,0.4);
+  background: rgba(255,109,0,0.08);
+  color: #ffab40;
+  font-size: 0.95rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+.gen-player-btn:hover { background: rgba(255,109,0,0.18); border-color: #ff6d00; color: #fff; }
+.gen-player-dl-btn {
+  margin-left: auto;
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,109,0,0.2);
+  background: rgba(255,109,0,0.04);
+  color: rgba(255,171,64,0.45);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: default;
+}
+
+/* ── Gen: CTA row (two buttons) ───────────────────────────────────────────── */
+.gen-cta-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
 </style>
 </head>
 <body>
@@ -1426,20 +1534,24 @@ header p {
 
   </div><!-- .gen-section -->
 
-  <!-- ── Section divider ───────────────────────────────────────────── -->
-  <div class="gen-divider" onclick="toggleOrientationPicker()">
-    <div class="gen-divider-line"></div>
-    <span class="gen-divider-text">✂️ Add Captions / CTA</span>
-    <div class="gen-divider-line"></div>
+  <!-- ── Gen: video player placeholder (shown after generation) ────────── -->
+  <div class="gen-player" id="gen-player">
+    <div class="gen-player-screen"></div>
+    <div class="gen-player-controls">
+      <button class="gen-player-btn" id="gen-play-btn" onclick="genTogglePlay()">▶</button>
+      <button class="gen-player-dl-btn">⬇ Download</button>
+    </div>
   </div>
-  <div class="orientation-picker" id="orientation-picker" style="display:none">
+
+  <!-- ── Add Captions / CTA ─────────────────────────────────────────── -->
+  <div class="gen-cta-row">
     <button class="orientation-btn" onclick="selectCaptionOrientation('horizontal')">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/></svg>
-      Horizontal
+      Add Captions / CTA — Horizontal
     </button>
     <button class="orientation-btn" onclick="selectCaptionOrientation('vertical')">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2"/></svg>
-      Vertical
+      Add Captions / CTA — Vertical
     </button>
   </div>
 
@@ -2150,11 +2262,39 @@ function genGenerate() {
   if (btn.classList.contains('loading')) return;
   btn.classList.add('loading');
   btn.textContent = '⏳ Generating...';
-  // UI-only placeholder — no API call yet
-  setTimeout(() => {
-    btn.classList.remove('loading');
-    btn.textContent = '🎬 Generate Video';
-  }, 3000);
+
+  const overlay = document.getElementById('gen-overlay');
+  const bar     = document.getElementById('gen-overlay-bar');
+  const pctEl   = document.getElementById('gen-overlay-pct');
+
+  bar.style.width   = '0%';
+  pctEl.textContent = '0%';
+  overlay.classList.add('visible');
+
+  const duration = 3000;
+  const start    = performance.now();
+
+  function step(now) {
+    const pct = Math.min(100, ((now - start) / duration) * 100);
+    bar.style.width   = pct + '%';
+    pctEl.textContent = Math.round(pct) + '%';
+    if (pct < 100) {
+      requestAnimationFrame(step);
+    } else {
+      setTimeout(() => {
+        overlay.classList.remove('visible');
+        btn.classList.remove('loading');
+        btn.textContent = '🎬 Generate Video';
+        document.getElementById('gen-player').classList.add('visible');
+      }, 350);
+    }
+  }
+  requestAnimationFrame(step);
+}
+
+function genTogglePlay() {
+  const btn = document.getElementById('gen-play-btn');
+  btn.textContent = btn.textContent === '▶' ? '⏸' : '▶';
 }
 
 // Wire file inputs
@@ -2187,7 +2327,7 @@ function toggleOrientationPicker() {
 
 function selectCaptionOrientation(dir) {
   document.querySelectorAll('.orientation-btn').forEach(b => b.classList.remove('active'));
-  event.currentTarget.classList.add('active');
+  if (event && event.currentTarget) event.currentTarget.classList.add('active');
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('visible'));
   if (dir === 'horizontal') {
     document.getElementById('panel-cc').classList.add('visible');
@@ -4322,5 +4462,16 @@ async function burnVertical() {
   btn.disabled = false;
 }
 </script>
+
+<!-- ── Gen: generation overlay ───────────────────────────────────────────── -->
+<div class="gen-overlay" id="gen-overlay">
+  <div class="gen-overlay-box">
+    <div class="gen-overlay-title">🎬 Generating Video...</div>
+    <div class="gen-overlay-bar-wrap">
+      <div class="gen-overlay-bar" id="gen-overlay-bar"></div>
+    </div>
+    <div class="gen-overlay-pct" id="gen-overlay-pct">0%</div>
+  </div>
+</div>
 </body>
 </html>
