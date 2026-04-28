@@ -1198,16 +1198,42 @@ async function burnLoopedEndpoint(req, res, targetDuration) {
       clipPath = step0Path;
     }
 
-    // ── Loop clip to exact target duration via stream_loop (no concat, clean timestamps) ──
-    const rawEnd      = trimEnd > 0 ? trimEnd : videoDuration;
-    const rawDuration = Math.max(0.01, rawEnd - trimStart);
-    const effectiveDur = rawDuration / videoSpeed;
-    if (effectiveDur <= 0) throw new Error('Cannot determine loop duration');
-    const loops = Math.ceil(targetDuration / effectiveDur) + 2;
+    // ── Loop clip to exact target duration via stream_loop ───────────────────
+    // Use ffprobe to get actual clip duration (not the original video duration,
+    // which may be 0 for some files causing loops=2802 and 21-min hangs).
+    const clipDur = await new Promise((resolve) => {
+      execFile(FFPROBE_BIN, ['-v', 'quiet', '-print_format', 'json', '-show_format', clipPath],
+        { timeout: 10000 }, (err, stdout) => {
+          try {
+            const d = JSON.parse(stdout);
+            resolve(parseFloat(d.format && d.format.duration) || 0);
+          } catch (_) { resolve(0); }
+        });
+    });
+    console.log(`[loop] targetDuration=${targetDuration} clipDur=${clipDur}`);
+    if (typeof targetDuration !== 'number' || targetDuration <= 0) throw new Error('Invalid targetDuration: ' + targetDuration);
 
     setProgress(10);
-    trimmedPath = path.join(os.tmpdir(), `vfe_trimmed_${Date.now()}_${rand}.mp4`);
-    await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), '-c', 'copy', trimmedPath]);
+    if (clipDur > 0 && clipDur >= targetDuration) {
+      // Clip is already long enough — just trim it, no loop needed
+      trimmedPath = path.join(os.tmpdir(), `vfe_trimmed_${Date.now()}_${rand}.mp4`);
+      await runStep(['-i', clipPath, '-t', String(targetDuration), '-c', 'copy', '-y', trimmedPath]);
+    } else {
+      // Loop infinitely, stop at exactly targetDuration seconds
+      trimmedPath = path.join(os.tmpdir(), `vfe_trimmed_${Date.now()}_${rand}.mp4`);
+      await runStep(['-stream_loop', '-1', '-i', clipPath, '-t', String(targetDuration), '-c', 'copy', '-y', trimmedPath]);
+    }
+
+    // Verify output duration
+    const loopedDur = await new Promise((resolve) => {
+      execFile(FFPROBE_BIN, ['-v', 'quiet', '-print_format', 'json', '-show_format', trimmedPath],
+        { timeout: 10000 }, (err, stdout) => {
+          try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 0); }
+          catch (_) { resolve(0); }
+        });
+    });
+    console.log(`[loop] output duration=${loopedDur}s (target=${targetDuration}s)`);
+    if (loopedDur < targetDuration * 0.8) throw new Error(`Loop output too short: ${loopedDur}s (expected ~${targetDuration}s)`);
     setProgress(35);
 
     // ── Apply overlays (caption, CTA, pointer, crop/scale) to the FULL video ─
@@ -1329,18 +1355,35 @@ async function burnVerticalEndpoint(req, res, targetDuration) {
       clipPath = step0Path;
     }
 
-    // ── If looped: concat + trim to target duration ───────────────────────────
+    // ── If looped: stream_loop to target duration ─────────────────────────────
     let processPath = clipPath;
     if (targetDuration) {
-      const rawEnd      = trimEnd > 0 ? trimEnd : videoDuration;
-      const rawDuration = Math.max(0.01, rawEnd - trimStart);
-      const effectiveDur = rawDuration / videoSpeed;
-      if (effectiveDur <= 0) throw new Error('Cannot determine loop duration');
-      const loops = Math.ceil(targetDuration / effectiveDur) + 2;
+      const clipDur = await new Promise((resolve) => {
+        execFile(FFPROBE_BIN, ['-v', 'quiet', '-print_format', 'json', '-show_format', clipPath],
+          { timeout: 10000 }, (err, stdout) => {
+            try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 0); }
+            catch (_) { resolve(0); }
+          });
+      });
+      console.log(`[vc-loop] targetDuration=${targetDuration} clipDur=${clipDur}`);
       setProgress(12);
 
       trimmedPath = mkTmp('trimmed.mp4');
-      await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), '-c', 'copy', trimmedPath]);
+      if (clipDur > 0 && clipDur >= targetDuration) {
+        await runStep(['-i', clipPath, '-t', String(targetDuration), '-c', 'copy', '-y', trimmedPath]);
+      } else {
+        await runStep(['-stream_loop', '-1', '-i', clipPath, '-t', String(targetDuration), '-c', 'copy', '-y', trimmedPath]);
+      }
+
+      const loopedDur = await new Promise((resolve) => {
+        execFile(FFPROBE_BIN, ['-v', 'quiet', '-print_format', 'json', '-show_format', trimmedPath],
+          { timeout: 10000 }, (err, stdout) => {
+            try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 0); }
+            catch (_) { resolve(0); }
+          });
+      });
+      console.log(`[vc-loop] output duration=${loopedDur}s (target=${targetDuration}s)`);
+      if (loopedDur < targetDuration * 0.8) throw new Error(`Loop output too short: ${loopedDur}s (expected ~${targetDuration}s)`);
       setProgress(30);
       processPath = trimmedPath;
     }
