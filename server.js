@@ -9,7 +9,7 @@ const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
 const https   = require('https');
-const { execSync, execFile } = require('child_process');
+const { execSync, execFile, spawn } = require('child_process');
 const { createCanvas, loadImage } = require('canvas');
 const jwt     = require('jsonwebtoken');
 
@@ -313,8 +313,66 @@ app.post('/convert', upload.single('file'), async (req, res) => {
   }
 });
 
+// ── Shared ffmpeg runner (spawn-based, stderr drained, serialised) ────────────
+// Rules:
+//   1. Use spawn() not execFile() — so stderr is a live stream we can drain.
+//   2. Pipe every stderr chunk to process.stdout immediately — prevents the 64 KB
+//      OS pipe buffer from filling up and deadlocking ffmpeg on write().
+//   3. Resolve on 'close' event, reject on non-zero exit code or spawn error.
+//   4. Kill after 5 minutes if the process hasn't exited.
+//   5. Only ONE ffmpeg process runs at a time server-wide (runExclusive queue).
+function spawnStep(tag, args, timeoutMs = 600000) {
+  return new Promise((resolve, reject) => {
+    console.log(`[${tag}] ffmpeg`, args.join(' '));
+    let done = false;
+    let stderrTail = '';
+    const proc = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    proc.stderr.on('data', data => {
+      process.stdout.write(data);                                  // drain + show in terminal
+      stderrTail = (stderrTail + data.toString()).slice(-800);    // keep tail for error messages
+    });
+    proc.on('close', code => {
+      if (done) return; done = true; clearTimeout(timer);
+      if (code !== 0) reject(new Error(`ffmpeg exited ${code}\n${stderrTail}`));
+      else resolve();
+    });
+    proc.on('error', err => { if (done) return; done = true; clearTimeout(timer); reject(err); });
+    const timer = setTimeout(() => {
+      if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error(`[${tag}] ffmpeg timed out after ${timeoutMs / 1000}s`)); }
+    }, timeoutMs);
+  });
+}
+
+// ── Global burn-job queue (one job at a time) ─────────────────────────────────
+// Prevents concurrent ffmpeg jobs from competing for resources.
+// Each burn request waits for the previous one to fully finish before starting.
+let _burnJobQueue = Promise.resolve();
+function runExclusive(fn) {
+  const result = _burnJobQueue.then(fn);
+  _burnJobQueue = result.catch(() => {}); // always advance the queue, even on error
+  return result;
+}
+
 // ── Progress tracking for burn-captions jobs ──────────────────────────────────
 const burnProgress = new Map();
+
+// ── Download a URL to a local temp file (for Kling CDN videos) ────────────────
+function downloadToTemp(url) {
+  return new Promise((resolve, reject) => {
+    const tmpPath = path.join(os.tmpdir(), `vfe_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
+    const file = fs.createWriteStream(tmpPath);
+    https.get(url, res => {
+      if (res.statusCode !== 200) {
+        file.destroy();
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+        return reject(new Error('Download failed: HTTP ' + res.statusCode));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(() => resolve(tmpPath)));
+      file.on('error', err => { try { fs.unlinkSync(tmpPath); } catch (_) {} reject(err); });
+    }).on('error', err => { try { fs.unlinkSync(tmpPath); } catch (_) {} reject(err); });
+  });
+}
 
 app.get('/api/burn-progress', (req, res) => {
   const pct = burnProgress.get(req.query.id);
@@ -390,7 +448,7 @@ app.post('/api/preview-convert', upload.single('file'), async (req, res) => {
 });
 
 // ── Burn-captions endpoint ────────────────────────────────────────────────────
-app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
+app.post('/api/burn-captions', upload.single('video'), (req, res) => { runExclusive(async () => {
   let inputPath  = req.file ? req.file.path : null;
   let capPngPath = null;
   let ctaPngPath = null;
@@ -416,23 +474,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
     if (keep) try { fs.unlinkSync(keep); } catch (_) {}
   }
 
-  function runStep(args) {
-    return new Promise((resolve, reject) => {
-      console.log('[burn] ffmpeg', args.join(' '));
-      let done = false;
-      const proc = execFile(FFMPEG_BIN, args, { timeout: 120000 }, (err, stdout, stderr) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        if (stderr) console.log('[burn] stderr:', stderr.slice(-400));
-        if (err) reject(new Error(err.message + (stderr ? '\n' + stderr.slice(-300) : '')));
-        else resolve();
-      });
-      const timer = setTimeout(() => {
-        if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error('ffmpeg timed out')); }
-      }, 120000);
-    });
-  }
+  function runStep(args) { return spawnStep('burn', args); }
 
   // node-canvas helper: draw rounded rect path
   function roundRectPath(ctx, x, y, w, h, r) {
@@ -468,12 +510,18 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
   }
 
   try {
+    const klingVideoUrl = req.body.klingVideoUrl;
+    if (!inputPath && klingVideoUrl && klingVideoUrl.startsWith('http')) {
+      console.log('[burn-captions] downloading Kling video from URL...');
+      inputPath = await downloadToTemp(klingVideoUrl);
+      console.log(`[burn-captions] downloaded: ${inputPath} (${fs.statSync(inputPath).size} bytes)`);
+    } else if (req.file) {
+      const origExt = path.extname(req.file.originalname || '').slice(1).toLowerCase() || 'mp4';
+      const renamed = `${inputPath}.${origExt}`;
+      fs.renameSync(inputPath, renamed);
+      inputPath = renamed;
+    }
     if (!inputPath) throw new Error('No video uploaded');
-
-    const origExt = path.extname(req.file.originalname || '').slice(1).toLowerCase() || 'mp4';
-    const renamed = `${inputPath}.${origExt}`;
-    fs.renameSync(inputPath, renamed);
-    inputPath = renamed;
 
     const {
       captionText, captionStyle, captionFontSize, captionPosX, captionPosY, captionMaxWidth,
@@ -614,7 +662,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
 
       step1Path = mkTmp('s1.mp4');
       await runStep([
-        '-i', currentInput, '-i', capPngPath,
+        '-i', currentInput, '-loop', '1', '-i', capPngPath,
         '-filter_complex', '[0:v][1:v]overlay=0:0[v]',
         '-map', '[v]', '-map', '0:a?', '-c:a', 'copy', '-shortest',
         ...encodeArgs, step1Path,
@@ -757,7 +805,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
 
       step3Path = mkTmp('s3.mp4');
       await runStep([
-        '-i', currentInput, '-i', ptrPngPath,
+        '-i', currentInput, '-loop', '1', '-i', ptrPngPath,
         '-filter_complex',
           `[0:v][1:v]overlay=` +
           `x='${ptrX - half}+${nx}*10*sin(2*PI*t*${pspeed})':` +
@@ -812,7 +860,7 @@ app.post('/api/burn-captions', upload.single('video'), async (req, res) => {
     cleanupAll(null);
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
-});
+}); });
 
 // ── Shared burn pipeline helper (used by 28s/56s endpoints) ──────────────────
 async function runBurnPipeline(inputPath, body, setProgress, rand) {
@@ -835,18 +883,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
   const mkTmp = (tag) => path.join(os.tmpdir(), `vfe_lp_${Date.now()}_${rand}_${tag}`);
   const encodeArgs = ['-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'];
 
-  function runStep(args) {
-    return new Promise((resolve, reject) => {
-      let done = false;
-      const proc = execFile(FFMPEG_BIN, args, {}, (err, stdout, stderr) => {
-        if (done) return; done = true; clearTimeout(timer);
-        if (stderr) console.log('[lp] stderr:', stderr.slice(-400));
-        if (err) reject(new Error(err.message + (stderr ? '\n' + stderr.slice(-300) : '')));
-        else resolve();
-      });
-      const timer = setTimeout(() => { if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error('ffmpeg timed out')); } }, 120000);
-    });
-  }
+  function runStep(args) { return spawnStep('lp', args); }
 
   function roundRectPath(ctx, x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
@@ -981,7 +1018,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
       fs.writeFileSync(capPngPath, capCv.toBuffer('image/png'));
     }
     step1Path = mkTmp('s1.mp4');
-    await runStep(['-i', currentInput, '-i', capPngPath, '-filter_complex', '[0:v][1:v]overlay=0:0[v]', '-map', '[v]', ...audioPassArgs, '-shortest', ...encodeArgs, step1Path]);
+    await runStep(['-i', currentInput, '-loop', '1', '-i', capPngPath, '-filter_complex', '[0:v][1:v]overlay=0:0[v]', '-map', '[v]', ...audioPassArgs, '-shortest', ...encodeArgs, step1Path]);
     currentInput = step1Path;
   }
   setProgress(35);
@@ -1047,7 +1084,7 @@ async function runBurnPipeline(inputPath, body, setProgress, rand) {
     fs.writeFileSync(ptrPngPath, ptrCv.toBuffer('image/png'));
     const half = Math.floor(diag / 2);
     step3Path = mkTmp('s3.mp4');
-    await runStep(['-i', currentInput, '-i', ptrPngPath, '-filter_complex', `[0:v][1:v]overlay=x='${ptrX - half}+${nx}*8*sin(2*PI*t/${dur})':y='${ptrY - half}+${ny}*8*sin(2*PI*t/${dur})':eval=frame[v]`, '-map', '[v]', ...audioPassArgs, '-shortest', ...encodeArgs, step3Path]);
+    await runStep(['-i', currentInput, '-loop', '1', '-i', ptrPngPath, '-filter_complex', `[0:v][1:v]overlay=x='${ptrX - half}+${nx}*8*sin(2*PI*t/${dur})':y='${ptrY - half}+${ny}*8*sin(2*PI*t/${dur})':eval=frame[v]`, '-map', '[v]', ...audioPassArgs, '-shortest', ...encodeArgs, step3Path]);
     currentInput = step3Path;
   }
   setProgress(90);
@@ -1086,28 +1123,24 @@ async function burnLoopedEndpoint(req, res, targetDuration) {
   function setProgress(pct) { burnProgress.set(jobId, pct); }
 
   try {
+    const klingVideoUrl = req.body.klingVideoUrl;
+    if (!inputPath && klingVideoUrl && klingVideoUrl.startsWith('http')) {
+      console.log('[burn-looped] downloading Kling video from URL...');
+      inputPath = await downloadToTemp(klingVideoUrl);
+      console.log(`[burn-looped] downloaded: ${inputPath} (${fs.statSync(inputPath).size} bytes)`);
+    } else if (req.file) {
+      const origExt = path.extname(req.file.originalname || '').slice(1).toLowerCase() || 'mp4';
+      const renamed = `${inputPath}.${origExt}`;
+      fs.renameSync(inputPath, renamed);
+      inputPath = renamed;
+    }
     if (!inputPath) throw new Error('No video uploaded');
-    const origExt = path.extname(req.file.originalname || '').slice(1).toLowerCase() || 'mp4';
-    const renamed = `${inputPath}.${origExt}`;
-    fs.renameSync(inputPath, renamed);
-    inputPath = renamed;
 
     const rand = Math.random().toString(36).slice(2, 8);
     const mkTmp = (tag) => path.join(os.tmpdir(), `vfe_lp_${Date.now()}_${rand}_${tag}`);
     const encodeArgs = ['-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'];
 
-    function runStep(args) {
-      return new Promise((resolve, reject) => {
-        let done = false;
-        const proc = execFile(FFMPEG_BIN, args, {}, (err, stdout, stderr) => {
-          if (done) return; done = true;
-          if (stderr) console.log('[loop] stderr:', stderr.slice(-400));
-          if (err) reject(new Error(err.message + (stderr ? '\n' + stderr.slice(-300) : '')));
-          else resolve();
-        });
-        setTimeout(() => { if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error('ffmpeg timed out')); } }, 300000);
-      });
-    }
+    function runStep(args) { return spawnStep('loop', args); }
 
     // ── ffprobe original video ────────────────────────────────────────────────
     setProgress(3);
@@ -1174,7 +1207,7 @@ async function burnLoopedEndpoint(req, res, targetDuration) {
 
     setProgress(10);
     trimmedPath = path.join(os.tmpdir(), `vfe_trimmed_${Date.now()}_${rand}.mp4`);
-    await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
+    await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), '-c', 'copy', trimmedPath]);
     setProgress(35);
 
     // ── Apply overlays (caption, CTA, pointer, crop/scale) to the FULL video ─
@@ -1205,9 +1238,9 @@ async function burnLoopedEndpoint(req, res, targetDuration) {
   }
 }
 
-app.post('/api/burn-10s', upload.single('video'), (req, res) => burnLoopedEndpoint(req, res, 10));
-app.post('/api/burn-28s', upload.single('video'), (req, res) => burnLoopedEndpoint(req, res, 28));
-app.post('/api/burn-56s', upload.single('video'), (req, res) => burnLoopedEndpoint(req, res, 56));
+app.post('/api/burn-10s', upload.single('video'), (req, res) => runExclusive(() => burnLoopedEndpoint(req, res, 10)));
+app.post('/api/burn-28s', upload.single('video'), (req, res) => runExclusive(() => burnLoopedEndpoint(req, res, 28)));
+app.post('/api/burn-56s', upload.single('video'), (req, res) => runExclusive(() => burnLoopedEndpoint(req, res, 56)));
 
 // ── Vertical format endpoint ──────────────────────────────────────────────────
 async function burnVerticalEndpoint(req, res, targetDuration) {
@@ -1226,25 +1259,21 @@ async function burnVerticalEndpoint(req, res, targetDuration) {
   const mkTmp  = (tag) => path.join(os.tmpdir(), `vfe_vc_${Date.now()}_${rand}_${tag}`);
   const encodeArgs = ['-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'];
 
-  function runStep(args) {
-    return new Promise((resolve, reject) => {
-      let done = false;
-      const proc = execFile(FFMPEG_BIN, args, {}, (err, stdout, stderr) => {
-        if (done) return; done = true;
-        if (stderr) console.log('[vc] stderr:', stderr.slice(-400));
-        if (err) reject(new Error(err.message + (stderr ? '\n' + stderr.slice(-300) : '')));
-        else resolve();
-      });
-      setTimeout(() => { if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error('ffmpeg timed out')); } }, 300000);
-    });
-  }
+  function runStep(args) { return spawnStep('vc', args); }
 
   try {
+    const klingVideoUrl = req.body.klingVideoUrl;
+    if (!inputPath && klingVideoUrl && klingVideoUrl.startsWith('http')) {
+      console.log('[burn-vertical] downloading Kling video from URL...');
+      inputPath = await downloadToTemp(klingVideoUrl);
+      console.log(`[burn-vertical] downloaded: ${inputPath} (${fs.statSync(inputPath).size} bytes)`);
+    } else if (req.file) {
+      const origExt = path.extname(req.file.originalname || '').slice(1).toLowerCase() || 'mp4';
+      const renamed = `${inputPath}.${origExt}`;
+      fs.renameSync(inputPath, renamed);
+      inputPath = renamed;
+    }
     if (!inputPath) throw new Error('No video uploaded');
-    const origExt = path.extname(req.file.originalname || '').slice(1).toLowerCase() || 'mp4';
-    const renamed = `${inputPath}.${origExt}`;
-    fs.renameSync(inputPath, renamed);
-    inputPath = renamed;
 
     // ── ffprobe ───────────────────────────────────────────────────────────────
     setProgress(3);
@@ -1311,7 +1340,7 @@ async function burnVerticalEndpoint(req, res, targetDuration) {
       setProgress(12);
 
       trimmedPath = mkTmp('trimmed.mp4');
-      await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), ...encodeArgs, trimmedPath]);
+      await runStep(['-stream_loop', String(loops), '-i', clipPath, '-t', String(targetDuration), '-c', 'copy', trimmedPath]);
       setProgress(30);
       processPath = trimmedPath;
     }
@@ -1383,13 +1412,13 @@ async function burnVerticalEndpoint(req, res, targetDuration) {
   }
 }
 
-app.post('/api/burn-vertical',     upload.single('video'), (req, res) => burnVerticalEndpoint(req, res, null));
-app.post('/api/burn-vertical-10s', upload.single('video'), (req, res) => burnVerticalEndpoint(req, res, 10));
-app.post('/api/burn-vertical-28s', upload.single('video'), (req, res) => burnVerticalEndpoint(req, res, 28));
-app.post('/api/burn-vertical-56s', upload.single('video'), (req, res) => burnVerticalEndpoint(req, res, 56));
+app.post('/api/burn-vertical',     upload.single('video'), (req, res) => runExclusive(() => burnVerticalEndpoint(req, res, null)));
+app.post('/api/burn-vertical-10s', upload.single('video'), (req, res) => runExclusive(() => burnVerticalEndpoint(req, res, 10)));
+app.post('/api/burn-vertical-28s', upload.single('video'), (req, res) => runExclusive(() => burnVerticalEndpoint(req, res, 28)));
+app.post('/api/burn-vertical-56s', upload.single('video'), (req, res) => runExclusive(() => burnVerticalEndpoint(req, res, 56)));
 
 // ── Video Editor endpoint ─────────────────────────────────────────────────────
-app.post('/api/video-editor', upload.single('video'), async (req, res) => {
+app.post('/api/video-editor', upload.single('video'), (req, res) => { runExclusive(async () => {
   let inputPath = req.file ? req.file.path : null;
   let preConvPath = null; // GIF/WEBP → mp4 pre-conversion
   let step0Path = null, step1Path = null, step2Path = null, step3Path = null, step4Path = null;
@@ -1398,17 +1427,7 @@ app.post('/api/video-editor', upload.single('video'), async (req, res) => {
   burnProgress.set(jobId, 0);
   function setProgress(pct) { burnProgress.set(jobId, pct); }
 
-  function runStep(args) {
-    return new Promise((resolve, reject) => {
-      let done = false;
-      const proc = execFile(FFMPEG_BIN, args, {}, (err, stdout, stderr) => {
-        if (done) return; done = true;
-        if (err) reject(new Error(err.message + (stderr ? '\n' + stderr.slice(-300) : '')));
-        else resolve();
-      });
-      setTimeout(() => { if (!done) { done = true; proc.kill('SIGKILL'); reject(new Error('ffmpeg timed out')); }}, 300000);
-    });
-  }
+  function runStep(args) { return spawnStep('ve', args); }
 
   function cleanupAll() {
     for (const p of [inputPath, preConvPath, step0Path, step1Path, step2Path, step3Path, step4Path]) {
@@ -1651,7 +1670,7 @@ app.post('/api/video-editor', upload.single('video'), async (req, res) => {
     cleanupAll();
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
-});
+}); });
 
 // ── Startup: check libwebp availability ───────────────────────────────────────
 try {
@@ -1847,16 +1866,19 @@ app.post('/api/estimate-size', upload.single('video'), async (req, res) => {
 // ── Kling AI: generate video ──────────────────────────────────────────────────
 app.post('/api/generate-video', express.json({ limit: '20mb' }), async (req, res) => {
   try {
-    const { image, prompt, duration, mode } = req.body;
+    const { image, endImage, prompt, duration, mode } = req.body;
     if (!image) return res.status(400).json({ error: 'No image provided' });
 
-    const result = await klingRequest('POST', '/v1/videos/image2video', {
+    const body = {
       model_name: 'kling-v2-5-turbo',
       image,
       prompt:   prompt || 'Static camera, slightly animate',
       duration: String(duration || 5),
       mode:     mode   || 'std',
-    });
+    };
+    if (endImage) body.image_tail = endImage;
+
+    const result = await klingRequest('POST', '/v1/videos/image2video', body);
 
     if (result.code !== 0) throw new Error(result.message || 'Kling API error');
     res.json({ task_id: result.data.task_id });
@@ -1872,7 +1894,9 @@ app.get('/api/video-status/:taskId', async (req, res) => {
     const result = await klingRequest('GET', `/v1/videos/image2video/${req.params.taskId}`, null);
     if (result.code !== 0) throw new Error(result.message || 'Kling API error');
     const data      = result.data;
-    const video_url = data.task_result?.videos?.[0]?.url || null;
+    const video_url = data.task_result?.videos?.[0]?.url
+      || data.works?.[0]?.resource?.resource
+      || null;
     res.json({ status: data.task_status, video_url });
   } catch (err) {
     console.error('[video-status]', err.message);
@@ -1880,7 +1904,7 @@ app.get('/api/video-status/:taskId', async (req, res) => {
   }
 });
 
-// ── Kling AI: proxy video (avoids COEP cross-origin restrictions) ─────────────
+// ── Kling AI: proxy video (supports Range requests for seeking) ────────────────
 app.get('/api/proxy-video', (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'Missing url' });
@@ -1890,18 +1914,31 @@ app.get('/api/proxy-video', (req, res) => {
   if (!parsed.hostname.endsWith('kling.ai') && !parsed.hostname.endsWith('klingai.com')) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  https.get(url, proxyRes => {
+  // Forward Range header so the browser can seek
+  const upstreamHeaders = {};
+  if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
+
+  const options = {
+    hostname: parsed.hostname,
+    path:     parsed.pathname + parsed.search,
+    method:   'GET',
+    headers:  upstreamHeaders,
+  };
+  const proxyReq = https.request(options, proxyRes => {
+    res.status(proxyRes.statusCode || 200);
     res.setHeader('Content-Type',  proxyRes.headers['content-type'] || 'video/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    if (proxyRes.headers['content-length']) {
-      res.setHeader('Content-Length', proxyRes.headers['content-length']);
-    }
+    if (proxyRes.headers['content-length']) res.setHeader('Content-Length', proxyRes.headers['content-length']);
+    if (proxyRes.headers['content-range'])  res.setHeader('Content-Range',  proxyRes.headers['content-range']);
     const dl = req.query.download;
     if (dl) res.setHeader('Content-Disposition', `attachment; filename="${dl}"`);
     proxyRes.pipe(res);
-  }).on('error', err => {
+  });
+  proxyReq.on('error', err => {
     if (!res.headersSent) res.status(502).json({ error: err.message });
   });
+  proxyReq.end();
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
